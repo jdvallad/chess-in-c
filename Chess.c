@@ -1,13 +1,32 @@
-#include <stdio.h> // define the header file
-#include <stdbool.h> // booleans!
-#include <stdint.h> // ints!
-#define HASH_LENGTH 70
-int main()   // define the main function
-{
-    printf("Welcome to JavaTpoint\r\n");  // print the statement.
-    return 0;
+#include "chess.h"
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+ struct Chess {
+    char letter;
+    uint32_t id;
+};
+
+Chess *chess_create(char letter, uint32_t id){
+    Chess *output = (Chess *) malloc(sizeof(Chess));
+    if(output) {
+        output->letter = letter;
+        output->id = id;
+    }
+    return output;
 }
 
-struct Chess{
-  char* hash;
-};
+void chess_delete(Chess **input){
+    if(*input){
+        free(*input);
+        *input = NULL;
+    }
+    return;
+}
+char chess_letter(Chess *input){
+    return input->letter;
+}
+void testFunction() {
+  printf("Does this work?\n");
+  return;
+}
