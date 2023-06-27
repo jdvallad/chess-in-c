@@ -3,21 +3,25 @@ CFLAGS = -Wall -Wextra -Werror -Wpedantic
 LINKAGE = -lm
 all: driver 
 
-driver: clean
-	$(CC) $(CFLAGS) -o driver driver.c chess.c $(LINKAGE)
+driver:
+	$(CC) $(CFLAGS) -o Driver Driver.c $(LINKAGE)
 
-debug: clean
-	$(CC) -g $(CFLAGS) -o driver driver.c chess.c $(LINKAGE)
+run:
+	./Driver
+
+debug:
+	$(CC) -g $(CFLAGS) -o Driver Driver.c $(LINKAGE)
 clean:
 	rm -f driver
 	rm -f *.o
 
-scan-build: clean
+scan-build:
 	scan-build make
 
-format: clean
-	$(CC)-format -i -style=file *.h
+format:
 	$(CC)-format -i -style=file *.c
 
 valgrind: debug
-	valgrind --leak-check=full -s ./driver
+	valgrind --leak-check=full -s ./Driver
+
+test: clean format driver run

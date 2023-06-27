@@ -1,10 +1,7 @@
-#include "chess.h"
+#include "Chess.c"
 #include <stdio.h>
 
 int main() {
-  printf("Hello World!\n");
-  Chess *omg = chess_create('a',2);
-  printf("%c\n",chess_letter(omg));
-  chess_delete(&omg);
+  printBoard(WHITE);
   return 0;
 }
