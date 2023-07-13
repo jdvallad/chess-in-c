@@ -1,9 +1,5 @@
+#include <MoveSet.h>
 #include <stdlib.h>
-typedef struct MoveSet MoveSet;
-struct MoveSet {
-  char temp;
-};
-
 MoveSet *moveset_create() {
   MoveSet *output = (MoveSet *)malloc(sizeof(MoveSet));
   return output;

@@ -4,13 +4,13 @@ LINKAGE = -lm
 all: driver 
 
 driver:
-	$(CC) $(CFLAGS) -o Driver Driver.c $(LINKAGE)
+	$(CC) $(CFLAGS) -o Driver Chess.c offset_set.c Driver.c $(LINKAGE)
 
 run:
 	./Driver
 
 debug:
-	$(CC) -g $(CFLAGS) -o Driver Driver.c $(LINKAGE)
+	$(CC) -g $(CFLAGS) -o Driver Chess.c offset_set.c Driver.c $(LINKAGE)
 clean:
 	rm -f driver
 	rm -f *.o
