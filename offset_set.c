@@ -45,3 +45,11 @@ offset offset_set_next(offset_set *input) {
     }
   }
 }
+
+offset get_next_offset(bitboard board, offset index) {
+  index = 63 - index;
+  do {
+    index -= 1;
+  } while (index != -1 && ((1ull << index) & board) == 0);
+  return 63 - index;
+}

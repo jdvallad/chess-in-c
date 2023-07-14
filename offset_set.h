@@ -13,4 +13,6 @@ uint8_t offset_set_size(offset_set *input);
 offset offset_set_next(offset_set *input);
 
 bool offset_set_is_empty(offset_set *input);
+
+offset get_next_offset(bitboard board, offset index);
 #endif
