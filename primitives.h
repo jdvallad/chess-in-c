@@ -1,16 +1,27 @@
 #ifndef PRIMITIVES_H
 #define PRIMITIVES_H
 #define MAX_POSSIBLE_MOVES 218
-#define MAX_GAME_LENGTH 5900
+#define MAX_GAME_LENGTH 5870
 #define HASH_LENGTH_IN_CHARS
+#define ROW_1 0xff00000000000000
 #include <stdint.h>
 #include <stdbool.h>
 typedef unsigned __int128 uint128_t;
 typedef uint64_t bitboard;
 typedef int8_t offset;
 typedef uint16_t move;
-typedef uint8_t hash[41];
-typedef enum piece{rook = 5, knight = 1, bishop = 3, queen = 7, king = 9, pawn = 17, none = 0} piece;
+typedef uint128_t hash[3];
+typedef bool positionCount[2];
+typedef enum piece
+{
+    rook = 5,
+    knight = 1,
+    bishop = 3,
+    queen = 7,
+    king = 9,
+    pawn = 17,
+    none = 0
+} piece;
 typedef struct offset_set
 {
     uint64_t board;
@@ -31,13 +42,12 @@ typedef struct MoveSet
 typedef struct Chess
 {
     // These are the fields relevant for hashing
-    bitboard pawns; // en_passant is stored on 1st rank of bits
+    bitboard pawns; // en_passant is stored on 1st rank of bits, and is_color_flipped stored in first bit
     bitboard friendly_pieces;
     bitboard enemy_pieces;
     bitboard orthogonal_pieces;
     bitboard diagonal_pieces;
-    uint8_t kings[2]; //castle rights stored in last 2 bits of each king
-    bool is_color_flipped; // for hashing, this is stored in the first bit of pawns
+    bitboard kings; // castle rights stored in corners
     //
     move legal_moves[218];
     bool game_over;
@@ -45,6 +55,9 @@ typedef struct Chess
     bool in_check;
     uint8_t half_move_count;
     uint16_t move_count;
+    uint16_t unique_positions;
     hash game_hash_list[MAX_GAME_LENGTH];
+    positionCount position_occurences[MAX_GAME_LENGTH];
+
 } Chess;
 #endif

@@ -19,4 +19,10 @@ void bit_move(Chess *game, move the_move);
 void remove_from_board(Chess *game, piece focus_piece, offset square);
 void add_to_board(Chess *game, piece focus_piece, offset square);
 move encode_move(offset starting_offset, offset ending_offset, piece promotion_piece);
+bitboard castle_rights(Chess *game);
+void flip_perspective(Chess *game);
+bool is_same_rank(offset a, offset b);
+bool is_same_file(offset a, offset b);
+void print_offset_table();
+move encode_string_move(char *focus_move);
 #endif
