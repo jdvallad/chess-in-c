@@ -4,6 +4,7 @@
 #define MAX_GAME_LENGTH 5870
 #define HASH_LENGTH_IN_CHARS
 #define ROW_1 0xff00000000000000
+#define NULL_MOVE 0x0
 #include <stdint.h>
 #include <stdbool.h>
 typedef uint64_t bitboard;
@@ -30,11 +31,6 @@ typedef struct offset_set
 typedef uint64_t bitboard;
 
 typedef int8_t offset;
-
-typedef struct MoveSet
-{
-    char temp;
-} MoveSet;
 
 typedef struct Chess
 {
