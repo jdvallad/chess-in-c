@@ -25,4 +25,12 @@ bool is_same_rank(offset a, offset b);
 bool is_same_file(offset a, offset b);
 void print_offset_table();
 move encode_string_move(char *focus_move);
+bitboard flip_bitboard(bitboard board);
+void make_move(Chess *game, char *focus_move);
+MoveSet get_legal_moves(Chess *game);
+Chess *clone(Chess *game);
+void draw(Chess *game);
+move static_encode_string_move(Chess *game, char *focus_move);
+void set_from_source(Chess *dest, Chess *source);
+void reset(Chess *output);
 #endif

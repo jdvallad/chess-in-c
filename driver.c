@@ -4,27 +4,32 @@
 #include "primitives.h"
 #include <stdio.h>
 #include <stdlib.h>
+Chess past_boards[MAX_GAME_LENGTH];
+Chess game;
+int game_length = 0;
 
+void do_move(char *focus_move) {
+  make_move(&game, focus_move);
+  game_length += 1;
+  set_from_source(&past_boards[game_length], &game);
+}
+
+void undo_move() {
+  if (game_length == 0) {
+    return;
+  }
+  game_length -= 1;
+  set_from_source(&game, &past_boards[game_length]);
+}
 int main() {
-  Chess *game = chess_create();
-  print_game_state(game);
-  bit_move(game, encode_string_move("e2e5"));
-  bit_move(game, encode_string_move("d7d5"));
-  game->pawns |= offset_to_bitboard(59);
-  // bit_move(game, encode_string_move("e5d6"));
-  // bit_move(game, encode_string_move("e1g1"));
-  print_offset_table();
-  print_game_state(game);
-  print_bitboard(game->pawns);
-  // printf("%d\n", get_piece_at_offset(game, 51));
-  bitboard temp = 0xffffffffffffff00;
-  temp = ~compass(temp, 0, -6);
-  // print_bitboard(temp);
-  printf("%lx", temp);
-  chess_delete(&game);
+  reset(&game);
+  set_from_source(&past_boards[0], &game);
+  draw(&game);
+  do_move("e2f8n");
+  draw(&game);
+  do_move("e8f8");
+  draw(&game);
+  undo_move();
+  draw(&game);
   return 0;
-  // bitboard wow = offset_to_bitboard(4);
-  // wow |= compass(wow, 0, 7);
-  // print_bitboard(wow);
-  // printf("%lx", wow);
 }

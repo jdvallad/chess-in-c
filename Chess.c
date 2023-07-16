@@ -47,21 +47,39 @@ offset_set *bitboard_to_offset_set(bitboard board) {
 
 Chess *chess_create() {
   Chess *output = (Chess *)malloc(sizeof(Chess));
-  output->pawns = 0xff00000000ff00; // contains the is_color_flipped in the
-                                    // first bit. (0 is false)
+  output->pawns = 0xff00000000ff00;
   output->friendly_pieces = 0xffff000000000000;
   output->enemy_pieces = 0xffff;
   output->orthogonal_pieces = 0x9100000000000091;
   output->diagonal_pieces = 0x3400000000000034;
   output->kings = 0x8900000000000089; // contains castle rights in corners
-  //  output->legal_moves = NULL;
-  output->game_over = false;
-  output->is_stalemate = false;
-  output->in_check = false;
-  output->half_move_count = 0;
-  output->move_count = 0;
-  // output->game_hash_list[MAX_GAME_LENGTH] = NULL;
+  output->pawns &=
+      ~((0x0) & offset_to_bitboard(63)); // board isn't color-flipped
+  output->pawns &=
+      ~((0x0) & offset_to_bitboard(62)); // player to move isn't in check
+  output->pawns &= ~((0x0) & offset_to_bitboard(61)); // game isn't a stalemate
+  output->pawns &= ~((0x0) & offset_to_bitboard(60)); // gam isn't over
+  output->pawns &=
+      ~compass(0xffff000000000000, 0, -1); // no enpassant is possible
   return output;
+}
+
+void reset(Chess *output) {
+  output->pawns = 0xff00000000ff00;
+  output->friendly_pieces = 0xffff000000000000;
+  output->enemy_pieces = 0xffff;
+  output->orthogonal_pieces = 0x9100000000000091;
+  output->diagonal_pieces = 0x3400000000000034;
+  output->kings = 0x8900000000000089; // contains castle rights in corners
+  output->pawns &=
+      ~((0x0) & offset_to_bitboard(63)); // board isn't color-flipped
+  output->pawns &=
+      ~((0x0) & offset_to_bitboard(62)); // player to move isn't in check
+  output->pawns &= ~((0x0) & offset_to_bitboard(61)); // game isn't a stalemate
+  output->pawns &= ~((0x0) & offset_to_bitboard(60)); // gam isn't over
+  output->pawns &=
+      ~compass(0xffff000000000000, 0, -1); // no enpassant is possible
+  return;
 }
 
 void chess_delete(Chess **input) {
@@ -94,9 +112,63 @@ bitboard compass(bitboard input, offset horizontal, offset vertical) {
   return input;
 }
 
+void draw(Chess *game) {
+  if (!(game->pawns & 1)) {
+    print_game_state(game);
+    return;
+  }
+  printf("\n\n     a   b   c   d   e   f   g   h  ");
+  printf("\n   ---------------------------------\n");
+  for (int i = 0; i != 64; i++) {
+    if (i % 8 == 0) {
+      printf(" %d", 8 - (i / 8));
+    }
+    printf(" | ");
+    piece focus_piece = get_piece_at_offset(game, i);
+    bitboard board = offset_to_bitboard(i);
+    char upset = game->friendly_pieces & board ? 32 : 0;
+    switch (focus_piece) {
+    case none:
+      printf("%c", ' ');
+      break;
+    case rook:
+      printf("%c", 'R' + upset);
+      break;
+    case knight:
+      printf("%c", 'N' + upset);
+      break;
+    case bishop:
+      printf("%c", 'B' + upset);
+      break;
+    case queen:
+      printf("%c", 'Q' + upset);
+      break;
+    case king:
+      printf("%c", 'K' + upset);
+      break;
+    case pawn:
+      printf("%c", 'P' + upset);
+      break;
+    default:
+      printf("%c", '?');
+      break;
+    }
+    if (i % 8 == 7) {
+      printf(" | %d\n   ---------------------------------\n",
+             9 - ((i + 1) / 8));
+    }
+  }
+  printf("     a   b   c   d   e   f   g   h  \n\n");
+  return;
+}
+
 void print_game_state(Chess *game) {
-  printf("\n ---------------------------------\n");
+  printf("\n\n     a   b   c   d   e   f   g   h  ");
+  printf("\n   ---------------------------------\n");
   for (int i = 56; i != -8; i++) {
+    if (i % 8 == 0) {
+      printf(" %d", 1 + (i / 8));
+    }
     printf(" | ");
     piece focus_piece = get_piece_at_offset(game, i);
     bitboard board = offset_to_bitboard(i);
@@ -129,10 +201,43 @@ void print_game_state(Chess *game) {
     }
     if (i % 8 == 7) {
       i -= 16;
-      printf(" |\n ---------------------------------\n");
+      printf(" | %d\n   ---------------------------------\n",
+             2 + ((i + 1) / 8));
     }
   }
+  printf("     a   b   c   d   e   f   g   h  \n\n");
   return;
+}
+
+move static_encode_string_move(Chess *game, char *focus_move) {
+  if (!(game->pawns & 1)) {
+    return encode_string_move(focus_move);
+  }
+  offset starting_offset =
+      (focus_move[0] - 'a') + 8 * (('9' - (focus_move[1] - '0')) - '1');
+  offset ending_offset =
+      (focus_move[2] - 'a') + 8 * (('9' - (focus_move[3] - '0')) - '1');
+  piece promotion_piece = none;
+  switch (focus_move[4]) {
+  case '\0':
+    break;
+  case 'q':
+    promotion_piece = queen;
+    break;
+  case 'r':
+    promotion_piece = rook;
+    break;
+  case 'b':
+    promotion_piece = bishop;
+    break;
+  case 'n':
+    promotion_piece = knight;
+    break;
+  default:
+    promotion_piece = none;
+    break;
+  }
+  return encode_move(starting_offset, ending_offset, promotion_piece);
 }
 
 move encode_string_move(char *focus_move) {
@@ -160,6 +265,7 @@ move encode_string_move(char *focus_move) {
   }
   return encode_move(starting_offset, ending_offset, promotion_piece);
 }
+
 void print_offset_table() {
   printf("\n -----------------------------------------\n");
   for (int i = 56; i != -8; i++) {
@@ -234,8 +340,49 @@ move encode_move(offset starting_offset, offset ending_offset,
   return output;
 }
 
+Chess *clone(Chess *game) {
+  Chess *output = chess_create();
+  output->pawns = game->pawns;
+  output->friendly_pieces = game->friendly_pieces;
+  output->enemy_pieces = game->enemy_pieces;
+  output->orthogonal_pieces = game->orthogonal_pieces;
+  output->diagonal_pieces = game->diagonal_pieces;
+  output->kings = game->kings;
+  return output;
+}
+void set_from_source(Chess *dest, Chess *source) {
+  dest->pawns = source->pawns;
+  dest->friendly_pieces = source->friendly_pieces;
+  dest->enemy_pieces = source->enemy_pieces;
+  dest->orthogonal_pieces = source->orthogonal_pieces;
+  dest->diagonal_pieces = source->diagonal_pieces;
+  dest->kings = source->kings;
+  return;
+}
+bitboard flip_bitboard(bitboard board) {
+  bitboard scan = 0xff00000000000000;
+  bitboard output = 0x0;
+  for (int i = 0; i < 8; i++) {
+    output |= compass(compass(scan, 0, i) & board, 0, 7 - 2 * i);
+  }
+  return output;
+}
+
 void flip_perspective(Chess *game) {
-  game->legal_moves[0]++;
+  game->pawns = flip_bitboard(game->pawns);
+  game->orthogonal_pieces = flip_bitboard(game->orthogonal_pieces);
+  game->diagonal_pieces = flip_bitboard(game->diagonal_pieces);
+  game->friendly_pieces = flip_bitboard(game->friendly_pieces);
+  game->enemy_pieces = flip_bitboard(game->enemy_pieces);
+  game->kings = flip_bitboard(game->kings);
+  bitboard temp = game->friendly_pieces;
+  game->friendly_pieces = game->enemy_pieces;
+  game->enemy_pieces = temp;
+  return;
+}
+
+void make_move(Chess *game, char *focus_move) {
+  bit_move(game, static_encode_string_move(game, focus_move));
   return;
 }
 
@@ -306,13 +453,14 @@ void bit_move(
     add_to_board(game, starting_piece, ending_offset);
   }
   game->pawns &= (0xffffffffffffff);
-  game->pawns |= compass((game->pawns & 0xff00000000000000), 0, -7);
+  game->pawns |= compass((game->pawns & 0xff), 0, -7);
+  game->pawns &= ~0xff;
   if ((starting_piece == pawn) && starting_offset > 7 && starting_offset < 16 &&
       ending_offset > 23 && ending_offset < 32) {
     game->pawns |= offset_to_bitboard(starting_offset + 48);
   }
-  game->pawns ^= offset_to_bitboard(7);
   flip_perspective(game);
+  game->pawns ^= 1;
 }
 
 bool is_same_rank(offset a, offset b) { return (a / 8) == (b / 8); }
