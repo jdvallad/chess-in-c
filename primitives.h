@@ -32,7 +32,7 @@ typedef uint64_t bitboard;
 
 typedef int8_t offset;
 
-typedef struct Chess
+typedef struct chess
 {
     bitboard pawns; // en_passant is stored on 8th rank of bits, and is_color_flipped stored in first bit
                     // 2nd bit is in_check, 3rd is is_stalemate, 4th is game_over;
@@ -41,5 +41,5 @@ typedef struct Chess
     bitboard orthogonal_pieces;
     bitboard diagonal_pieces;
     bitboard kings; // castle rights stored in corners
-} Chess;
+} chess;
 #endif

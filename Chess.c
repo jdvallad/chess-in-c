@@ -1,6 +1,7 @@
 #include "chess.h"
 #include <stdio.h>
 #include <stdlib.h>
+
 bitboard VERTICAL_OFFSETS_BITBOARDS[17] = {0ull,
                                            255ull,
                                            65535ull,
@@ -41,8 +42,8 @@ bitboard offset_to_bitboard(offset input) {
   return compass(1ull, (input % 8) - 7, (input / 8) - 7);
 }
 
-Chess *chess_create() {
-  Chess *output = (Chess *)malloc(sizeof(Chess));
+chess *chess_create() {
+  chess *output = (chess *)malloc(sizeof(chess));
   output->pawns = 0xff00000000ff00;
   output->friendly_pieces = 0xffff000000000000;
   output->enemy_pieces = 0xffff;
@@ -60,7 +61,7 @@ Chess *chess_create() {
   return output;
 }
 
-void reset(Chess *output) {
+void reset(chess *output) {
   output->pawns = 0xff00000000ff00;
   output->friendly_pieces = 0xffff000000000000;
   output->enemy_pieces = 0xffff;
@@ -78,7 +79,7 @@ void reset(Chess *output) {
   return;
 }
 
-void chess_delete(Chess **input) {
+void chess_delete(chess **input) {
   if (*input) {
     free(*input);
     *input = NULL;
@@ -108,7 +109,7 @@ bitboard compass(bitboard input, offset horizontal, offset vertical) {
   return input;
 }
 
-void print_game_state(Chess *game) {
+void print_game_state(chess *game) {
   printf("\n\n     a   b   c   d   e   f   g   h  ");
   printf("\n   ---------------------------------\n");
   for (int i = 56; i != -8; i++) {
@@ -155,11 +156,181 @@ void print_game_state(Chess *game) {
   return;
 }
 
-void set_legal_moves(Chess *game, move *legal_moves) {
-  game += 0;
-  legal_moves[0] = encode_string_move("e2e4");
-  legal_moves[1] = NULL_MOVE;
-  return;
+// fills up legal_moves with all possible legal moves
+// returns the number of legal moves
+int set_legal_moves(chess *game, move *legal_moves) {
+  int legal_moves_count = 0;
+  legal_moves[0] = NULL_MOVE;
+  legal_moves_count =
+      add_en_passant_capture(game, legal_moves, legal_moves_count);
+  legal_moves_count = add_castling_moves(game, legal_moves, legal_moves_count);
+  legal_moves_count =
+      add_double_pawn_pushes(game, legal_moves, legal_moves_count);
+  legal_moves_count =
+      add_single_pawn_pushes(game, legal_moves, legal_moves_count);
+  legal_moves_count =
+      add_left_pawn_captures(game, legal_moves, legal_moves_count);
+  legal_moves_count =
+      add_right_pawn_captures(game, legal_moves, legal_moves_count);
+
+  legal_moves_count = add_king_moves(game, legal_moves, legal_moves_count);
+  legal_moves_count = add_diagonal_moves(game, legal_moves, legal_moves_count);
+  legal_moves_count =
+      add_orthogonal_moves(game, legal_moves, legal_moves_count);
+  legal_moves_count = add_knight_moves(game, legal_moves, legal_moves_count);
+  return legal_moves_count;
+}
+
+int add_en_passant_capture(chess *game, move *legal_moves,
+                           int legal_moves_count) {
+  return legal_moves_count + game->diagonal_pieces * 0 + legal_moves[0] * 0 +
+         legal_moves_count * 0;
+}
+
+int add_castling_moves(chess *game, move *legal_moves, int legal_moves_count) {
+  return legal_moves_count + game->diagonal_pieces * 0 + legal_moves[0] * 0 +
+         legal_moves_count * 0;
+}
+
+int add_double_pawn_pushes(chess *game, move *legal_moves,
+                           int legal_moves_count) {
+  bitboard output_squares = game->friendly_pieces & true_pawns(game);
+  bitboard entire_board = game->friendly_pieces | game->enemy_pieces;
+  output_squares = output_squares & compass(ROW_1, 0, 1);
+  output_squares = (~entire_board) & compass(output_squares, 0, 1);
+  output_squares = (~entire_board) & compass(output_squares, 0, 1);
+  for (offset end_index = -1;
+       (end_index = get_next_offset(output_squares, end_index)) < 64;) {
+    legal_moves[legal_moves_count] =
+        encode_move(end_index - 16, end_index, none);
+    legal_moves_count++;
+    legal_moves[legal_moves_count] = NULL_MOVE;
+  }
+  return legal_moves_count;
+}
+
+int add_single_pawn_pushes(chess *game, move *legal_moves,
+                           int legal_moves_count) {
+  bitboard output_squares = game->friendly_pieces & true_pawns(game);
+  bitboard entire_board = game->friendly_pieces | game->enemy_pieces;
+  output_squares = (~entire_board) & compass(output_squares, 0, 1);
+  for (offset end_index = -1;
+       (end_index = get_next_offset(output_squares, end_index)) < 64;) {
+    legal_moves[legal_moves_count] =
+        encode_move(end_index - 8, end_index, none);
+    legal_moves_count++;
+    if (end_index > 55) {
+      legal_moves[legal_moves_count] =
+          encode_move(end_index - 8, end_index, rook);
+      legal_moves_count++;
+      encode_move(end_index - 8, end_index, bishop);
+      legal_moves_count++;
+      encode_move(end_index - 8, end_index, knight);
+      legal_moves_count++;
+    }
+    legal_moves[legal_moves_count] = NULL_MOVE;
+  }
+  return legal_moves_count;
+}
+
+int add_left_pawn_captures(chess *game, move *legal_moves,
+                           int legal_moves_count) {
+  bitboard output_squares = game->friendly_pieces & true_pawns(game);
+  output_squares = (game->enemy_pieces) & compass(output_squares, -1, 1);
+  for (offset end_index = -1;
+       (end_index = get_next_offset(output_squares, end_index)) < 64;) {
+    legal_moves[legal_moves_count] =
+        encode_move(end_index - 7, end_index, none);
+    legal_moves_count++;
+    if (end_index > 55) {
+      legal_moves[legal_moves_count] =
+          encode_move(end_index - 7, end_index, rook);
+      legal_moves_count++;
+      encode_move(end_index - 7, end_index, bishop);
+      legal_moves_count++;
+      encode_move(end_index - 7, end_index, knight);
+      legal_moves_count++;
+    }
+    legal_moves[legal_moves_count] = NULL_MOVE;
+  }
+  return legal_moves_count;
+}
+int add_right_pawn_captures(chess *game, move *legal_moves,
+                            int legal_moves_count) {
+  bitboard output_squares = game->friendly_pieces & true_pawns(game);
+  output_squares = (game->enemy_pieces) & compass(output_squares, 1, 1);
+  for (offset end_index = -1;
+       (end_index = get_next_offset(output_squares, end_index)) < 64;) {
+    legal_moves[legal_moves_count] =
+        encode_move(end_index - 9, end_index, none);
+    legal_moves_count++;
+    if (end_index > 55) {
+      legal_moves[legal_moves_count] =
+          encode_move(end_index - 9, end_index, rook);
+      legal_moves_count++;
+      encode_move(end_index - 9, end_index, bishop);
+      legal_moves_count++;
+      encode_move(end_index - 9, end_index, knight);
+      legal_moves_count++;
+    }
+    legal_moves[legal_moves_count] = NULL_MOVE;
+  }
+  return legal_moves_count;
+}
+int add_king_moves(chess *game, move *legal_moves, int legal_moves_count) {
+  bitboard king = game->friendly_pieces & true_kings(game);
+  bitboard output_squares = compass(king, 1, 0);
+  output_squares |= compass(output_squares, -1, 0);
+  output_squares |= compass(output_squares, 0, 1);
+  output_squares |= compass(output_squares, 0, -1);
+  output_squares &= (~game->friendly_pieces);
+  for (offset end_index = -1;
+       (end_index = get_next_offset(output_squares, end_index)) < 64;) {
+    legal_moves[legal_moves_count] =
+        encode_move(get_next_offset(king, -1), end_index, none);
+    legal_moves_count++;
+    legal_moves[legal_moves_count] = NULL_MOVE;
+  }
+  return legal_moves_count;
+}
+
+int add_diagonal_moves(chess *game, move *legal_moves, int legal_moves_count) {
+  return legal_moves_count + game->diagonal_pieces * 0 + legal_moves[0] * 0 +
+         legal_moves_count * 0;
+}
+
+int add_orthogonal_moves(chess *game, move *legal_moves,
+                         int legal_moves_count) {
+  return legal_moves_count + game->diagonal_pieces * 0 + legal_moves[0] * 0 +
+         legal_moves_count * 0;
+}
+
+int add_knight_moves(chess *game, move *legal_moves, int legal_moves_count) {
+  bitboard knights = game->friendly_pieces & (~true_pawns(game)) &
+                     (~game->orthogonal_pieces) & ~(game->diagonal_pieces) &
+                     (~true_kings(game));
+  for (offset start_index = -1;
+       (start_index = get_next_offset(knights, start_index)) < 64;) {
+    bitboard output_squares =
+        get_knight_destination_bitboard(game, start_index);
+    for (offset end_index = -1;
+         (end_index = get_next_offset(output_squares, end_index)) < 64;) {
+      legal_moves[legal_moves_count] =
+          encode_move(start_index, end_index, none);
+      legal_moves_count++;
+      legal_moves[legal_moves_count] = NULL_MOVE;
+    }
+  }
+  return legal_moves_count;
+}
+
+bitboard get_knight_destination_bitboard(chess *game, offset start_index) {
+  bitboard start_board = offset_to_bitboard(start_index);
+  return (~game->friendly_pieces) &
+         (compass(start_board, 2, 1) | compass(start_board, 1, 2) |
+          compass(start_board, 2, -1) | compass(start_board, -1, 2) |
+          compass(start_board, -2, 1) | compass(start_board, 1, -2) |
+          compass(start_board, -2, -1) | compass(start_board, -1, -2));
 }
 
 move encode_string_move(char *focus_move) {
@@ -205,19 +376,21 @@ void print_offset_table() {
   return;
 }
 
-bitboard castle_rights(Chess *game) {
+bitboard castle_rights(chess *game) {
   return game->kings & (compass(game->kings & 0x800000000000008, -4, 0) |
                         compass(game->kings & 0x800000000000008, 3, 0));
 }
 
-piece get_piece_at_offset(Chess *game, offset index) {
+bitboard true_pawns(chess *game) { return game->pawns & 0xffffffffffff00; }
+bitboard true_kings(chess *game) { return game->kings & ~castle_rights(game); }
+piece get_piece_at_offset(chess *game, offset index) {
   piece id = 0;
   bitboard board = offset_to_bitboard(index);
-  if (board & game->pawns & 0xffffffffffff00) {
+  if (board & true_pawns(game)) {
     id |= 1;
   }
   id = id << 1;
-  if (board & game->kings & ~castle_rights(game)) {
+  if (board & true_kings(game)) {
     id |= 1;
   }
   id = id << 1;
@@ -262,10 +435,10 @@ move encode_move(offset starting_offset, offset ending_offset,
   return output;
 }
 
-void display_move(char *focus_move, Chess *game, move *legal_moves,
-                   int *game_length, Chess *past_boards) {
+void display_move(char *focus_move, chess *game, move *legal_moves,
+                  int *game_length, chess *past_boards) {
   move real_move = encode_string_move(focus_move);
-  if (in_set(legal_moves, real_move)) {
+  if (true || in_set(legal_moves, real_move)) {
     bit_move(game, real_move);
     *game_length += 1;
     set_from_source(&past_boards[*game_length], game);
@@ -278,8 +451,8 @@ void display_move(char *focus_move, Chess *game, move *legal_moves,
   return;
 }
 
-void undo_move(Chess *game, move *legal_moves, int *game_length,
-               Chess *past_boards) {
+void undo_move(chess *game, move *legal_moves, int *game_length,
+               chess *past_boards) {
   if (*game_length == 0) {
     return;
   }
@@ -290,7 +463,7 @@ void undo_move(Chess *game, move *legal_moves, int *game_length,
   print_legal_moves(game, legal_moves);
 }
 
-void initialize_game(Chess *game, move *legal_moves, Chess *past_boards) {
+void initialize_game(chess *game, move *legal_moves, chess *past_boards) {
   reset(game);
   set_from_source(&past_boards[0], game);
   set_legal_moves(game, legal_moves);
@@ -298,8 +471,8 @@ void initialize_game(Chess *game, move *legal_moves, Chess *past_boards) {
   print_legal_moves(game, legal_moves);
 }
 
-Chess *clone(Chess *game) {
-  Chess *output = chess_create();
+chess *clone(chess *game) {
+  chess *output = chess_create();
   output->pawns = game->pawns;
   output->friendly_pieces = game->friendly_pieces;
   output->enemy_pieces = game->enemy_pieces;
@@ -309,7 +482,7 @@ Chess *clone(Chess *game) {
   return output;
 }
 
-void set_from_source(Chess *dest, Chess *source) {
+void set_from_source(chess *dest, chess *source) {
   dest->pawns = source->pawns;
   dest->friendly_pieces = source->friendly_pieces;
   dest->enemy_pieces = source->enemy_pieces;
@@ -328,7 +501,7 @@ bitboard flip_bitboard(bitboard board) {
   return output;
 }
 
-void flip_perspective(Chess *game) {
+void flip_perspective(chess *game) {
   game->pawns = flip_bitboard(game->pawns);
   game->orthogonal_pieces = flip_bitboard(game->orthogonal_pieces);
   game->diagonal_pieces = flip_bitboard(game->diagonal_pieces);
@@ -341,7 +514,7 @@ void flip_perspective(Chess *game) {
   return;
 }
 
-void make_move(Chess *game, char *focus_move) {
+void make_move(chess *game, char *focus_move) {
   bit_move(game, encode_string_move(focus_move));
   return;
 }
@@ -359,7 +532,7 @@ bool in_set(move *legal_moves, move focus_move) {
   }
 }
 
-void print_legal_moves(Chess *game, move *legal_moves) {
+void print_legal_moves(chess *game, move *legal_moves) {
   printf("{");
   for (int i = 0; legal_moves[i] != NULL_MOVE; i++) {
     if (i > 0) {
@@ -399,7 +572,7 @@ void print_legal_moves(Chess *game, move *legal_moves) {
 }
 
 void bit_move(
-    Chess *game,
+    chess *game,
     move the_move) { // don't eat the kings off the board, it breaks it
   offset starting_offset = the_move & 63;
   the_move = the_move >> 6;
@@ -479,7 +652,7 @@ bool is_same_rank(offset a, offset b) { return (a / 8) == (b / 8); }
 
 bool is_same_file(offset a, offset b) { return (a % 8) == (b % 8); }
 
-void remove_from_board(Chess *game, piece focus_piece, offset square) {
+void remove_from_board(chess *game, piece focus_piece, offset square) {
   if (focus_piece == none) {
     return;
   }
@@ -513,7 +686,7 @@ void remove_from_board(Chess *game, piece focus_piece, offset square) {
   }
 }
 
-void add_to_board(Chess *game, piece focus_piece, offset square) {
+void add_to_board(chess *game, piece focus_piece, offset square) {
   if (focus_piece == none) {
     return;
   }
