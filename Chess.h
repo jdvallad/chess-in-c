@@ -32,4 +32,14 @@ void reset(Chess *output);
 offset get_next_offset(bitboard board, offset index);
 bool in_set(move *legal_moves, move focus_move);
 void print_legal_moves(Chess *game, move *legal_moves);
+
+void terminal_move(char *focus_move, Chess *game, move *legal_moves,
+                          int *game_length, Chess *past_boards);
+
+void undo_move(Chess *game, move *legal_moves, int *game_length,
+                      Chess *past_boards);
+
+void initialize_game(Chess *game, move *legal_moves,
+                            Chess *past_boards) ;
+
 #endif

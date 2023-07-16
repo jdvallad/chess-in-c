@@ -1,6 +1,6 @@
-#include "Chess.h"
+#include "chess.h"
 #include "primitives.h"
-#include "terminal.h"
+#include "static_chess.h"
 #include <stdio.h>
 #include <stdlib.h>
 Chess past_boards[MAX_GAME_LENGTH];

@@ -1,5 +1,5 @@
-#include "terminal.h"
-#include "Chess.h"
+#include "static_chess.h"
+#include "chess.h"
 #include "primitives.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,7 +9,7 @@ void static_bit_move(Chess *game, char *focus_move) {
   return;
 }
 
-void static_terminal_move(char *focus_move, Chess *game, move *legal_moves,
+void static_display_move(char *focus_move, Chess *game, move *legal_moves,
                           int *game_length, Chess *past_boards) {
   move real_move = static_encode_string_move(game, focus_move);
   if (in_set(legal_moves, real_move)) {
@@ -44,42 +44,6 @@ void static_initialize_game(Chess *game, move *legal_moves,
   set_legal_moves(game, legal_moves);
   static_print_game_state(game);
   static_print_legal_moves(game, legal_moves);
-}
-
-void terminal_move(char *focus_move, Chess *game, move *legal_moves,
-                   int *game_length, Chess *past_boards) {
-  move real_move = encode_string_move(focus_move);
-  if (in_set(legal_moves, real_move)) {
-    bit_move(game, real_move);
-    *game_length += 1;
-    set_from_source(&past_boards[*game_length], game);
-    set_legal_moves(game, legal_moves);
-    print_game_state(game);
-    print_legal_moves(game, legal_moves);
-  } else {
-    printf("not a legal move!\n");
-  }
-  return;
-}
-
-void undo_move(Chess *game, move *legal_moves, int *game_length,
-               Chess *past_boards) {
-  if (*game_length == 0) {
-    return;
-  }
-  *game_length -= 1;
-  set_from_source(game, &past_boards[*game_length]);
-  set_legal_moves(game, legal_moves);
-  print_game_state(game);
-  print_legal_moves(game, legal_moves);
-}
-
-void initialize_game(Chess *game, move *legal_moves, Chess *past_boards) {
-  reset(game);
-  set_from_source(&past_boards[0], game);
-  set_legal_moves(game, legal_moves);
-  print_game_state(game);
-  print_legal_moves(game, legal_moves);
 }
 
 void static_print_game_state(Chess *game) {

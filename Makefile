@@ -4,13 +4,13 @@ LINKAGE = -lm
 all: driver 
 
 driver:
-	$(CC) $(CFLAGS) -o Driver Chess.c Terminal.c Driver.c $(LINKAGE)
+	$(CC) $(CFLAGS) -o driver chess.c static_chess.c driver.c $(LINKAGE)
 
 run:
-	./Driver
+	./driver
 
 debug:
-	$(CC) -g $(CFLAGS) -o Driver Chess.c Terminal.c Driver.c $(LINKAGE)
+	$(CC) -g $(CFLAGS) -o driver chess.c static_chess.c driver.c $(LINKAGE)
 clean:
 	rm -f driver
 	rm -f *.o
@@ -22,6 +22,6 @@ format:
 	$(CC)-format -i -style=file *.c
 
 valgrind: debug
-	valgrind --leak-check=full -s ./Driver
+	valgrind --leak-check=full -s ./driver
 
 test: clean format driver run
