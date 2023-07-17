@@ -16,6 +16,6 @@ void static_print_game_state(chess *game);
 
 move static_encode_string_move(chess *game, char *focus_move);
 
-void static_print_legal_moves(chess *game, move *legal_moves);
+void static_print_legal_moves(chess *game, move *legal_moves, int index_offset);
 
 #endif

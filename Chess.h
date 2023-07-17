@@ -24,14 +24,15 @@ void print_offset_table();
 move encode_string_move(char *focus_move);
 bitboard flip_bitboard(bitboard board);
 void make_move(chess *game, char *focus_move);
-int set_legal_moves(chess *game,move *legal_moves);
+int set_pseudo_legal_moves(chess *game,move *legal_moves,int index_offset);
+int set_legal_moves(chess *game, move *legal_moves, int index_offset);
 chess *clone(chess *game);
 void draw(chess *game);
 void set_from_source(chess *dest, chess *source);
 void reset(chess *output);
 offset get_next_offset(bitboard board, offset index);
 bool in_set(move *legal_moves, move focus_move);
-void print_legal_moves(chess *game, move *legal_moves);
+void print_legal_moves(chess *game, move *legal_moves, int index_offset);
 void display_move(char *focus_move, chess *game, move *legal_moves,
                           int *game_length, chess *past_boards);
 void undo_move(chess *game, move *legal_moves, int *game_length,
@@ -52,4 +53,7 @@ int add_knight_moves(chess *game, move *legal_moves, int legal_moves_count);
 bitboard true_pawns(chess *game);
 bitboard true_kings(chess *game);
 bitboard get_knight_destination_bitboard(chess *game,offset start_index);
+bitboard get_diagonal_destination_bitboard(chess *game, offset start_index);
+bitboard get_orthogonal_destination_bitboard(chess *game, offset start_index);
+bool is_legal_move(chess *game, move focus_move,move *legal_moves, int index_offset);
 #endif

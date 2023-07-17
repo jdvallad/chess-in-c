@@ -9,8 +9,10 @@ int game_length = 0;
 move legal_moves[MAX_GAME_LENGTH];
 
 int main() {
-  initialize_game(&game, legal_moves, past_boards);
-  // display_move("e2e4", &game, legal_moves, &game_length, past_boards);
-  // display_move("e2e4", &game, legal_moves, &game_length, past_boards);
+  static_initialize_game(&game, legal_moves, past_boards);
+  static_display_move("e2e4", &game, legal_moves, &game_length, past_boards);
+  static_display_move("f7f6", &game, legal_moves, &game_length, past_boards);
+  static_display_move("d1h5", &game, legal_moves, &game_length, past_boards);
+  print_legal_moves(&game, legal_moves, 20);
   return 0;
 }
