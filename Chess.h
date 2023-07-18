@@ -5,7 +5,6 @@
 #include "primitives.h"
 bitboard VERTICAL_OFFSETS_BITBOARDS[17];
 bitboard HORIZONTAL_OFFSETS_BITBOARDS[17];
-bitboard offset_to_bitboard(offset input);
 chess *chess_create();
 void chess_delete(chess **input);
 void print_bitboard(bitboard board);

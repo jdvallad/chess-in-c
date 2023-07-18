@@ -138,7 +138,7 @@ void static_print_board(full_chess *full_game) {
     }
     printf(" | ");
     piece focus_piece = get_piece_at_offset(game, i);
-    bitboard board = offset_to_bitboard(i);
+    bitboard board = offset_to_bitboard[i];
     char upset = game->friendly_pieces & board ? 32 : 0;
     switch (focus_piece) {
     case none:

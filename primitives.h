@@ -11,6 +11,7 @@
 typedef uint64_t bitboard;
 typedef int8_t offset;
 typedef uint16_t move;
+extern bitboard offset_to_bitboard[64];
 typedef enum piece
 {
     rook = 5,

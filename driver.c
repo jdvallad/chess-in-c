@@ -11,7 +11,7 @@ move legal_moves[MAX_POSSIBLE_MOVES];
 move past_legal_moves[MAX_POSSIBLE_MOVES][MAX_GAME_LENGTH];
 
 full_chess game;
-int main_1() {
+int main() {
   int depth = 5;
   int batch_count = 1;
   full_chess_initialize(&game);
@@ -26,7 +26,7 @@ int main_1() {
   return 0;
 }
 char fen[MAX_FEN_LENGTH];
-int main() {
+int main_1() {
   full_chess_initialize(&game);
   while (!is_game_over(&game)) {
     make_move(&game, get_random_move(&game));
@@ -35,4 +35,17 @@ int main() {
   static_print_game_status(&game);
   get_fen(&game, fen);
   printf("%s\n", fen);
+  return 0;
+}
+
+int main_2() {
+  printf("bitboard offset_to_bitboard[64] = {");
+  for (int i = 0; i < 64; i++) {
+    if (i != 0) {
+      printf(", ");
+    }
+    printf("0x%lx", offset_to_bitboard[i]);
+  }
+  printf("};\n");
+  return 0;
 }

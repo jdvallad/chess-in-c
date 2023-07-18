@@ -17,11 +17,11 @@ full_chess *full_chess_create() {
   game->board_history[0].kings =
       0x8900000000000089; // contains castle rights in corners
   game->board_history[0].pawns &=
-      ~((0x0) & offset_to_bitboard(63)); // board isn't color-flipped
+      ~((0x0) & offset_to_bitboard[63]); // board isn't color-flipped
   game->board_history[0].pawns &=
-      ~((0x0) & offset_to_bitboard(62)); // player to move isn't in check
+      ~((0x0) & offset_to_bitboard[62]); // player to move isn't in check
   game->board_history[0].pawns &=
-      ~((0x0) & offset_to_bitboard(61)); // game isn't over
+      ~((0x0) & offset_to_bitboard[61]); // game isn't over
   game->board_history[0].pawns &=
       ~compass(0xffff000000000000, 0, -1); // no en-passant is possible
   game->current_board = &(game->board_history[0]);
@@ -70,22 +70,22 @@ void get_fen(full_chess *game, char *fen) {
   fen[str_index] = ' ';
   str_index++;
   bool any_castle = false;
-  if (castle & offset_to_bitboard(7)) {
+  if (castle & offset_to_bitboard[7]) {
     fen[str_index] = 'K';
     str_index++;
     any_castle = true;
   }
-  if (castle & offset_to_bitboard(0)) {
+  if (castle & offset_to_bitboard[0]) {
     fen[str_index] = 'Q';
     str_index++;
     any_castle = true;
   }
-  if (castle & offset_to_bitboard(63)) {
+  if (castle & offset_to_bitboard[63]) {
     fen[str_index] = 'k';
     str_index++;
     any_castle = true;
   }
-  if (castle & offset_to_bitboard(56)) {
+  if (castle & offset_to_bitboard[56]) {
     fen[str_index] = 'q';
     str_index++;
     any_castle = true;
@@ -144,7 +144,7 @@ void get_fen(full_chess *game, char *fen) {
 char get_piece_char_at_offset(full_chess *game, offset index) {
   piece focus_piece = get_piece_at_offset(game->current_board, index);
   bool is_friendly =
-      offset_to_bitboard(index) & game->current_board->friendly_pieces;
+      offset_to_bitboard[index] & game->current_board->friendly_pieces;
   switch (focus_piece) {
   case none:
     return ' ';
@@ -175,11 +175,11 @@ void full_chess_initialize(full_chess *game) {
   game->board_history[0].kings =
       0x8900000000000089; // contains castle rights in corners
   game->board_history[0].pawns &=
-      ~((0x0) & offset_to_bitboard(63)); // board isn't color-flipped
+      ~((0x0) & offset_to_bitboard[63]); // board isn't color-flipped
   game->board_history[0].pawns &=
-      ~((0x0) & offset_to_bitboard(62)); // player to move isn't in check
+      ~((0x0) & offset_to_bitboard[62]); // player to move isn't in check
   game->board_history[0].pawns &=
-      ~((0x0) & offset_to_bitboard(61)); // game isn't over
+      ~((0x0) & offset_to_bitboard[61]); // game isn't over
   game->board_history[0].pawns &=
       ~compass(0xffff000000000000, 0, -1); // no en-passant is possible
   game->current_board = &(game->board_history[0]);
@@ -375,7 +375,7 @@ void print_board(full_chess *full_game) {
     }
     printf(" | ");
     piece focus_piece = get_piece_at_offset(game, i);
-    bitboard board = offset_to_bitboard(i);
+    bitboard board = offset_to_bitboard[i];
     char upset = game->friendly_pieces & board ? 0 : 32;
     switch (focus_piece) {
     case none:
