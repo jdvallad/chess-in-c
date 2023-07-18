@@ -32,7 +32,7 @@ int main() {
     make_move(&game, get_random_move(&game));
   }
   print_board(&game);
-  print_game_status(&game);
+  static_print_game_status(&game);
   get_fen(&game, fen);
   printf("%s\n", fen);
 }
