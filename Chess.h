@@ -73,5 +73,6 @@ bool in_check(chess *game);
 bitboard get_castle_pass_through_board(chess *game, move focus_move);
 bool attacking_offset(chess *game, offset focus_offset);
 bool game_over(chess *game);
-int perft(chess *game, int depth, move past_legal_moves[MAX_POSSIBLE_MOVES][MAX_GAME_LENGTH]);
+int perft(chess *game, int depth, move past_legal_moves[MAX_POSSIBLE_MOVES][MAX_GAME_LENGTH], bool top_call);
+void print_move(chess *game, move focus_move);
 #endif

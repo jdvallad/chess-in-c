@@ -33,9 +33,9 @@ int main1() {
 
 int main() {
   initialize_game(&game, legal_moves, past_boards);
-  int depth = 4;
+  int depth = 3;
   printf("Calculating perft now...\n");
-  int perfty = perft(&game, depth, past_legal_moves);
+  int perfty = perft(&game, depth, past_legal_moves, true);
   printf("Perft at depth %d: ", depth);
   printf("%d\n", perfty);
   return 0;

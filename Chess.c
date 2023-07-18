@@ -239,7 +239,8 @@ bool is_legal_move(chess *game, move focus_move) {
 }
 
 int perft(chess *game, int depth,
-          move past_legal_moves[MAX_POSSIBLE_MOVES][MAX_GAME_LENGTH]) {
+          move past_legal_moves[MAX_POSSIBLE_MOVES][MAX_GAME_LENGTH],
+          bool top_call) {
   if (depth == 1) {
     return set_legal_moves(game, past_legal_moves[depth]);
   }
@@ -256,7 +257,12 @@ int perft(chess *game, int depth,
     bitboard orthogonal_pieces = game->orthogonal_pieces;
     bitboard diagonal_pieces = game->diagonal_pieces;
     bit_move(game, focus_move);
-    output += perft(game, depth - 1, past_legal_moves);
+    int perft_result = perft(game, depth - 1, past_legal_moves, false);
+    output += perft_result;
+    if (top_call) {
+      print_move(game, focus_move);
+      printf(": %d\n", perft_result);
+    }
     game->pawns = pawns;
     game->kings = kings;
     game->enemy_pieces = enemy_pieces;
@@ -787,6 +793,34 @@ bool in_set(move *legal_moves, move focus_move) {
   }
 }
 
+void print_move(chess *game, move focus_move) {
+  offset starting_offset = get_starting_offset(focus_move);
+  offset ending_offset = get_ending_offset(focus_move);
+  printf("%c", 'a' + (starting_offset % 8));
+  printf("%c", '1' + (starting_offset / 8));
+  printf("%c", 'a' + (ending_offset % 8));
+  printf("%c", '1' + (ending_offset / 8));
+  piece starting_piece = get_piece_at_offset(game, starting_offset);
+  switch ((focus_move >> 12) & 3) {
+  case 0:
+    if ((starting_piece == pawn) && ending_offset > 55) {
+      printf("q");
+    }
+    break;
+  case 1:
+    printf("r");
+    break;
+  case 2:
+    printf("k");
+    break;
+  case 3:
+    printf("b");
+    break;
+  default:
+    break;
+  }
+  return;
+}
 void print_legal_moves(chess *game, move *legal_moves) {
   printf("{");
   for (int i = 0; legal_moves[i] != NULL_MOVE; i++) {
