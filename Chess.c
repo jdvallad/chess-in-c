@@ -161,13 +161,15 @@ void print_game_state(chess *game) {
 int set_pseudo_legal_moves(chess *game, move *legal_moves) {
   int legal_moves_count = 0;
   legal_moves[legal_moves_count] = NULL_MOVE;
+
   legal_moves_count =
       add_en_passant_capture(game, legal_moves, legal_moves_count);
+
   legal_moves_count = add_castling_moves(game, legal_moves, legal_moves_count);
   legal_moves_count =
-      add_double_pawn_pushes(game, legal_moves, legal_moves_count);
-  legal_moves_count =
       add_single_pawn_pushes(game, legal_moves, legal_moves_count);
+  legal_moves_count =
+      add_double_pawn_pushes(game, legal_moves, legal_moves_count);
   legal_moves_count =
       add_left_pawn_captures(game, legal_moves, legal_moves_count);
   legal_moves_count =
