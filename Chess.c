@@ -743,21 +743,32 @@ bitboard flip_bitboard(bitboard board) {
   return output;
 }
 
-void swap_sides(chess *game) {
-  bitboard temp = game->friendly_pieces;
-  game->friendly_pieces = game->enemy_pieces;
-  game->enemy_pieces = temp;
-  return;
-}
-
 void flip_perspective(chess *game) {
+  bitboard information_row = compass(game->pawns, 0, -7) & ROW_1;
+  bitboard en_passant_row = compass(game->pawns & ROW_1, 0, 7);
+  game->pawns &= ~(ROW_1 | compass(ROW_1, 0, 7));
+  game->pawns |= information_row | en_passant_row;
   game->pawns = flip_bitboard(game->pawns);
   game->orthogonal_pieces = flip_bitboard(game->orthogonal_pieces);
   game->diagonal_pieces = flip_bitboard(game->diagonal_pieces);
   game->friendly_pieces = flip_bitboard(game->friendly_pieces);
   game->enemy_pieces = flip_bitboard(game->enemy_pieces);
   game->kings = flip_bitboard(game->kings);
-  swap_sides(game);
+  bitboard temp = game->friendly_pieces;
+  game->friendly_pieces = game->enemy_pieces;
+  game->enemy_pieces = temp;
+  game->pawns ^= 1;
+  offset enemy_king_offset =
+      get_next_offset(true_kings(game) & game->enemy_pieces, -1);
+  bool in_check = false;
+  if (attacking_offset(game, enemy_king_offset)) {
+    in_check = true;
+  }
+  if (in_check) {
+    game->pawns |= 2;
+  } else {
+    game->pawns &= ~2;
+  }
   return;
 }
 
@@ -806,7 +817,9 @@ bool attacking_offset(chess *game, offset focus_offset) {
   bitboard knights = (game->friendly_pieces | game->enemy_pieces) &
                      (~game->orthogonal_pieces) & (~game->diagonal_pieces) &
                      ~(true_pawns(game)) & ~(true_kings(game));
-  swap_sides(game);
+  bitboard temp = game->friendly_pieces;
+  game->friendly_pieces = game->enemy_pieces;
+  game->enemy_pieces = temp;
   bitboard knight_attackers =
       game->enemy_pieces & knights &
       get_knight_destination_bitboard(game, focus_offset);
@@ -818,7 +831,9 @@ bool attacking_offset(chess *game, offset focus_offset) {
       get_orthogonal_destination_bitboard(game, focus_offset);
   bitboard king_attackers = game->enemy_pieces & true_kings(game) &
                             get_king_destination_bitboard(game, focus_offset);
-  swap_sides(game);
+  temp = game->friendly_pieces;
+  game->friendly_pieces = game->enemy_pieces;
+  game->enemy_pieces = temp;
   bitboard pawn_attackers =
       game->friendly_pieces & game->pawns &
       (compass(attack_board, -1, -1) | compass(attack_board, 1, -1));
@@ -851,12 +866,12 @@ void bit_move(
     if ((castle_rights(game) & offset_to_bitboard[0]) && ending_offset == 2) {
       remove_from_board(game, rook, 0);
       remove_from_board(game, get_piece_at_offset(game, 3), 3);
-      add_to_board(game, rook, 3);
+      add_to_board(game, rook, 3, true);
     }
     if ((castle_rights(game) & offset_to_bitboard[7]) && ending_offset == 6) {
       remove_from_board(game, rook, 7);
       remove_from_board(game, get_piece_at_offset(game, 5), 5);
-      add_to_board(game, rook, 5);
+      add_to_board(game, rook, 5, true);
     }
     game->kings &= ~offset_to_bitboard[0];
     game->kings &= ~offset_to_bitboard[7];
@@ -882,30 +897,16 @@ void bit_move(
                       ending_offset - 8);
   }
   if ((starting_piece == pawn) && ending_offset > 55) {
-    add_to_board(game, promotion_piece, ending_offset);
+    add_to_board(game, promotion_piece, ending_offset, true);
   } else {
-    add_to_board(game, starting_piece, ending_offset);
+    add_to_board(game, starting_piece, ending_offset, true);
   }
-  offset enemy_king_offset =
-      get_next_offset(true_kings(game) & game->enemy_pieces, -1);
-  bool in_check = false;
-  if (attacking_offset(game, enemy_king_offset)) {
-    in_check = true;
-  }
-  game->pawns &= (0xffffffffffffff);
-  game->pawns |= compass((game->pawns & 0xff), 0, -7);
-  game->pawns &= ~0xff;
   if ((starting_piece == pawn) && starting_offset > 7 && starting_offset < 16 &&
       ending_offset > 23 && ending_offset < 32) {
-    game->pawns |= offset_to_bitboard[starting_offset + 48];
+
+    game->pawns |= offset_to_bitboard[starting_offset - 8];
   }
   flip_perspective(game);
-  game->pawns ^= 1;
-  if (in_check) {
-    game->pawns |= 2;
-  } else {
-    game->pawns &= ~2;
-  }
 }
 
 bool is_same_rank(offset a, offset b) { return (a / 8) == (b / 8); }
@@ -913,14 +914,27 @@ bool is_same_rank(offset a, offset b) { return (a / 8) == (b / 8); }
 bool is_same_file(offset a, offset b) { return (a % 8) == (b % 8); }
 
 void remove_from_board(chess *game, piece focus_piece, offset square) {
+  bitboard board = offset_to_bitboard[square];
   if (focus_piece == none) {
+    game->friendly_pieces &= ~board;
+    game->enemy_pieces &= ~board;
+    game->orthogonal_pieces &= ~board;
+    game->diagonal_pieces &= ~board;
+    if (board & true_kings(game)) {
+      game->kings &= ~board;
+    }
+    if (board & true_pawns(game)) {
+      game->kings &= ~board;
+    }
     return;
   }
-  bitboard board = offset_to_bitboard[square];
-  if (game->friendly_pieces & board) {
-    game->friendly_pieces &= ~board;
-  } else {
-    game->enemy_pieces &= ~board;
+  if (!((focus_piece == king && !(true_kings(game) & board)) ||
+        (focus_piece == pawn && !(true_pawns(game) & board)))) {
+    if (game->friendly_pieces & board) {
+      game->friendly_pieces &= ~board;
+    } else {
+      game->enemy_pieces &= ~board;
+    }
   }
   switch (focus_piece) {
   case rook:
@@ -946,12 +960,17 @@ void remove_from_board(chess *game, piece focus_piece, offset square) {
   }
 }
 
-void add_to_board(chess *game, piece focus_piece, offset square) {
+void add_to_board(chess *game, piece focus_piece, offset square,
+                  bool is_friendly) {
   if (focus_piece == none) {
     return;
   }
   bitboard board = offset_to_bitboard[square];
-  game->friendly_pieces |= board;
+  if (is_friendly) {
+    game->friendly_pieces |= board;
+  } else {
+    game->enemy_pieces |= board;
+  }
   switch (focus_piece) {
   case rook:
     game->orthogonal_pieces |= board;

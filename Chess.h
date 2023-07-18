@@ -13,7 +13,7 @@ void print_game_state(chess *input);
 piece get_piece_at_offset(chess *game, offset index);
 void bit_move(chess *game, move the_move);
 void remove_from_board(chess *game, piece focus_piece, offset square);
-void add_to_board(chess *game, piece focus_piece, offset square);
+void add_to_board(chess *game, piece focus_piece, offset square, bool is_friendly);
 move encode_move(offset starting_offset, offset ending_offset, piece promotion_piece);
 bitboard castle_rights(chess *game);
 void flip_perspective(chess *game);

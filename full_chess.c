@@ -27,20 +27,174 @@ full_chess *full_chess_create() {
   game->current_board = &(game->board_history[0]);
   game->current_legal_moves = (game->legal_moves_history[game->move_count]);
   set_legal_moves(game->current_board, game->current_legal_moves);
+  game->is_static = false;
   return game;
 }
 
+void empty(full_chess *game) {
+  game->move_count = 0;
+  game->half_move_count = 0;
+  game->board_history[0].pawns = 0;
+  game->board_history[0].friendly_pieces = 0;
+  game->board_history[0].enemy_pieces = 0;
+  game->board_history[0].orthogonal_pieces = 0;
+  game->board_history[0].diagonal_pieces = 0;
+  game->board_history[0].kings = 0;
+  game->current_board = &(game->board_history[0]);
+  game->current_legal_moves = (game->legal_moves_history[game->move_count]);
+  game->current_legal_moves[0] = NULL_MOVE;
+}
+
 void set_from_fen(full_chess *game, char *fen) {
-  game->move_count += fen[0] * 0;
+  empty(game);
+  int str_index = 0;
+  char focus_char = fen[str_index];
+  bool is_numeric;
+  int board_index;
+  board_index = 0;
+  game->move_count = 0;
+  while (focus_char != ' ') {
+    is_numeric = (focus_char >= '0') && (focus_char <= '9');
+    bool is_friendly = (focus_char >= 'A' && focus_char <= 'Z');
+    if (is_numeric) {
+      for (int i = 0; i < focus_char - '0'; i++) {
+        remove_from_board(game->current_board, none, board_index);
+        board_index++;
+      }
+    } else {
+      focus_char = is_friendly ? focus_char : focus_char + ('A' - 'a');
+      piece focus_piece;
+      switch (focus_char) {
+      case 'K':
+        focus_piece = king;
+        add_to_board(game->current_board, focus_piece, board_index,
+                     !is_friendly);
+        board_index++;
+        break;
+      case 'Q':
+        focus_piece = queen;
+        add_to_board(game->current_board, focus_piece, board_index,
+                     !is_friendly);
+        board_index++;
+        break;
+      case 'R':
+        focus_piece = rook;
+        add_to_board(game->current_board, focus_piece, board_index,
+                     !is_friendly);
+        board_index++;
+        break;
+      case 'B':
+        focus_piece = bishop;
+        add_to_board(game->current_board, focus_piece, board_index,
+                     !is_friendly);
+        board_index++;
+        break;
+      case 'N':
+        focus_piece = knight;
+        add_to_board(game->current_board, focus_piece, board_index,
+                     !is_friendly);
+        board_index++;
+        break;
+      case 'P':
+        focus_piece = pawn;
+        add_to_board(game->current_board, focus_piece, board_index,
+                     !is_friendly);
+        board_index++;
+        break;
+      case '/':
+        break;
+      default:
+        break;
+      }
+    }
+    str_index += 1;
+    focus_char = fen[str_index];
+  }
+  str_index++;
+  focus_char = fen[str_index];
+  if (focus_char == 'b') {
+    game->current_board->pawns |= 1;
+  }
+  str_index += 2;
+  focus_char = fen[str_index];
+  if (focus_char != '-') {
+    while (focus_char != ' ') {
+      switch (focus_char) {
+      case 'K':
+        game->current_board->kings |= offset_to_bitboard[7];
+        break;
+      case 'Q':
+        game->current_board->kings |= offset_to_bitboard[0];
+        break;
+      case 'k':
+        game->current_board->kings |= offset_to_bitboard[63];
+        break;
+      case 'q':
+        game->current_board->kings |= offset_to_bitboard[56];
+        break;
+      default:
+        break;
+      }
+      str_index++;
+      focus_char = fen[str_index];
+    }
+  } else {
+    str_index++;
+    focus_char = fen[str_index];
+  }
+  str_index++;
+  focus_char = fen[str_index];
+  if (focus_char != '-') {
+    int en_passant = focus_char - 'a';
+    str_index++;
+    focus_char = fen[str_index];
+    en_passant += 8 * (focus_char - '1');
+    str_index += 2;
+    focus_char = fen[str_index];
+    game->current_board->pawns |= offset_to_bitboard[en_passant];
+  } else {
+    str_index += 2;
+    focus_char = fen[str_index];
+  }
+  int count = 0;
+  while (focus_char != ' ') {
+    count *= 10;
+    count += focus_char - '0';
+    str_index++;
+    focus_char = fen[str_index];
+  }
+  game->half_move_count += count;
+  count = 0;
+  str_index++;
+  focus_char = fen[str_index];
+  while (focus_char != ' ' && focus_char != '\0') {
+    count *= 10;
+    count += focus_char - '0';
+    str_index++;
+    focus_char = fen[str_index];
+  }
+  game->move_count += 2 * count;
+  if (game->half_move_count >= 75) {
+    set_legal_moves(game->current_board, game->current_legal_moves);
+    if (num_legal_moves(game) > 0) {
+      toggle_stalemate(game);
+    }
+    toggle_game_over(game);
+  }
+  if (position_frequency(game) >= 5) {
+    toggle_game_over(game);
+    toggle_stalemate(game);
+  }
+  set_legal_moves(game->current_board, game->current_legal_moves);
   return;
 }
 
-void get_fen(full_chess *game, char *fen) {
+char *get_fen(full_chess *game, char *fen) {
   int str_index = 0;
   int empty_count = 0;
   char temp_char;
   bitboard castle = castle_rights(game->current_board);
-  for (offset i = 56; i != -7; i++) {
+  for (offset i = 56; i != -8; i++) {
     temp_char = get_piece_char_at_offset(game, i);
     if (temp_char == ' ') {
       empty_count++;
@@ -65,7 +219,7 @@ void get_fen(full_chess *game, char *fen) {
     }
   }
   fen[str_index - 1] = ' ';
-  fen[str_index] = 'w';
+  fen[str_index] = game->current_board->pawns & 1 ? 'b' : 'w';
   str_index++;
   fen[str_index] = ' ';
   str_index++;
@@ -121,8 +275,9 @@ void get_fen(full_chess *game, char *fen) {
   }
   fen[str_index] = ' ';
   str_index++;
-  fen[str_index] = '\0';
-  int full_move_count = 1 + (game->move_count / 2);
+
+  int full_move_count =
+      1 + ((game->move_count - (game->current_board->pawns & 1)) / 2);
   if (full_move_count < 10) {
     fen[str_index] = '0' + full_move_count;
     str_index++;
@@ -140,7 +295,94 @@ void get_fen(full_chess *game, char *fen) {
     fen[str_index] = '0' + (full_move_count % 10);
     str_index++;
   }
+  fen[str_index] = '\0';
+  return fen;
 }
+
+void print_fen(full_chess *game) {
+  int str_index = 0;
+  int empty_count = 0;
+  char temp_char;
+  bitboard castle = castle_rights(game->current_board);
+  for (offset i = 56; i != -8; i++) {
+    temp_char = get_piece_char_at_offset(game, i);
+    if (temp_char == ' ') {
+      empty_count++;
+    } else {
+      if (empty_count > 0) {
+        printf("%c", '0' + empty_count);
+        empty_count = 0;
+      }
+      printf("%c", temp_char);
+    }
+    if (i % 8 == 7) {
+      i -= 16;
+      if (empty_count > 0) {
+        printf("%c", '0' + empty_count);
+        empty_count = 0;
+      }
+      {
+        if (i != -9)
+          printf("%c", '/');
+      }
+    }
+  }
+  printf("%c", ' ');
+  printf("%c", game->current_board->pawns & 1 ? 'b' : 'w');
+  printf("%c", ' ');
+  bool any_castle = false;
+  if (castle & offset_to_bitboard[7]) {
+    printf("%c", 'K');
+    any_castle = true;
+  }
+  if (castle & offset_to_bitboard[0]) {
+    printf("%c", 'Q');
+    any_castle = true;
+  }
+  if (castle & offset_to_bitboard[63]) {
+    printf("%c", 'k');
+    any_castle = true;
+  }
+  if (castle & offset_to_bitboard[56]) {
+    printf("%c", 'q');
+    any_castle = true;
+  }
+  if (!any_castle) {
+    printf("%c", '-');
+  }
+  printf("%c", ' ');
+  bitboard en_passant = game->current_board->pawns & ROW_1;
+  offset en_passant_offset =
+      get_next_offset(game->current_board->pawns & ROW_1, -1);
+  if (en_passant) {
+    printf("%c", 'a' + en_passant_offset % 8);
+    printf("%c", '1' + (en_passant_offset / 8));
+  } else {
+    printf("%c", '-');
+  }
+  printf("%c", ' ');
+  str_index++;
+  if (game->half_move_count < 10) {
+    printf("%c", '0' + game->half_move_count);
+  } else {
+    printf("%c", '0' + (game->half_move_count / 10));
+    printf("%c", '0' + (game->half_move_count % 10));
+  }
+  printf("%c", ' ');
+  int full_move_count = 1 + (game->move_count / 2);
+  if (full_move_count < 10) {
+    printf("%c", '0' + full_move_count);
+  } else if (full_move_count < 100) {
+    printf("%c", '0' + (full_move_count / 10));
+    printf("%c", '0' + (full_move_count % 10));
+  } else {
+    printf("%c", '0' + (full_move_count / 100));
+    printf("%c",
+           '0' + ((full_move_count - 100 * (full_move_count / 100)) / 10));
+    printf("%c", '0' + (full_move_count % 10));
+  }
+}
+
 char get_piece_char_at_offset(full_chess *game, offset index) {
   piece focus_piece = get_piece_at_offset(game->current_board, index);
   bool is_friendly =
@@ -164,6 +406,7 @@ char get_piece_char_at_offset(full_chess *game, offset index) {
     return '?';
   }
 }
+
 void full_chess_initialize(full_chess *game) {
   game->move_count = 0;
   game->half_move_count = 0;
@@ -267,12 +510,10 @@ void make_move(full_chess *game, move real_move) {
         toggle_stalemate(game);
       }
       toggle_game_over(game);
-      printf("half_move_count = 75\n");
     }
     if (position_frequency(game) >= 5) {
       toggle_game_over(game);
       toggle_stalemate(game);
-      printf("position_frequency = 5\n");
     }
     set_legal_moves(game->current_board, game->current_legal_moves);
   } else {

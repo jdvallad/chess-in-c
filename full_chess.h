@@ -22,6 +22,8 @@ int position_frequency(full_chess *game);
 move get_random_move(full_chess *game);
 void full_chess_initialize(full_chess *game);
 void set_from_fen(full_chess *game, char *fen);
-void get_fen(full_chess *game, char *fen);
+char * get_fen(full_chess *game, char *fen);
 char get_piece_char_at_offset(full_chess *game, offset index);
+void print_fen(full_chess *game);
+void empty(full_chess *game);
 #endif
