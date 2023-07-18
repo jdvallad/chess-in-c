@@ -16,16 +16,23 @@ void static_display_move(char *focus_move, chess *game, move *legal_moves,
     bit_move(game, real_move);
     *game_length += 1;
     set_from_source(&past_boards[*game_length], game);
-    int pseudo_length = set_pseudo_legal_moves(game, legal_moves, 0);
-    set_legal_moves(game, legal_moves, pseudo_length);
+    set_legal_moves(game, legal_moves);
     static_print_game_state(game);
-    static_print_legal_moves(game, legal_moves, 0);
+    static_print_legal_moves(game, legal_moves);
   } else {
     printf("not a legal move!\n");
   }
   return;
 }
 
+void static_play_move_list(char **move_list, int num_moves, chess *game,
+                           move *legal_moves, int *game_length,
+                           chess *past_boards) {
+  for (int i = 0; i < num_moves; i++) {
+    static_display_move(move_list[i], game, legal_moves, game_length,
+                        past_boards);
+  }
+}
 void static_undo_move(chess *game, move *legal_moves, int *game_length,
                       chess *past_boards) {
   if (*game_length == 0) {
@@ -33,20 +40,18 @@ void static_undo_move(chess *game, move *legal_moves, int *game_length,
   }
   *game_length -= 1;
   set_from_source(game, &past_boards[*game_length]);
-  int pseudo_length = set_pseudo_legal_moves(game, legal_moves, 0);
-  set_legal_moves(game, legal_moves, pseudo_length);
+  set_legal_moves(game, legal_moves);
   static_print_game_state(game);
-  static_print_legal_moves(game, legal_moves, 0);
+  static_print_legal_moves(game, legal_moves);
 }
 
 void static_initialize_game(chess *game, move *legal_moves,
                             chess *past_boards) {
   reset(game);
   set_from_source(&past_boards[0], game);
-  int pseudo_length = set_pseudo_legal_moves(game, legal_moves, 0);
-  set_legal_moves(game, legal_moves, pseudo_length);
+  set_legal_moves(game, legal_moves);
   static_print_game_state(game);
-  static_print_legal_moves(game, legal_moves, 0);
+  static_print_legal_moves(game, legal_moves);
 }
 
 void static_print_game_state(chess *game) {
@@ -130,11 +135,10 @@ move static_encode_string_move(chess *game, char *focus_move) {
   return encode_move(starting_offset, ending_offset, promotion_piece);
 }
 
-void static_print_legal_moves(chess *game, move *legal_moves,
-                              int index_offset) {
+void static_print_legal_moves(chess *game, move *legal_moves) {
   printf("{");
-  for (int i = index_offset; legal_moves[i] != NULL_MOVE; i++) {
-    if (i > index_offset) {
+  for (int i = 0; legal_moves[i] != NULL_MOVE; i++) {
+    if (i > 0) {
       printf(",");
     }
     if (!(game->pawns & 1)) {
