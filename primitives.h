@@ -5,6 +5,7 @@
 #define HASH_LENGTH_IN_CHARS
 #define ROW_1 0xff00000000000000
 #define NULL_MOVE 0x0
+#define MAX_FEN_LENGTH 100
 #include <stdint.h>
 #include <stdbool.h>
 typedef uint64_t bitboard;
@@ -42,4 +43,16 @@ typedef struct chess
     bitboard diagonal_pieces;
     bitboard kings; // castle rights stored in corners
 } chess;
+
+typedef struct full_chess
+{
+    chess board_history[MAX_GAME_LENGTH];
+    chess *current_board;
+    int move_count;
+    int half_move_count;
+    move legal_moves_history[MAX_POSSIBLE_MOVES][MAX_GAME_LENGTH];
+    move *current_legal_moves;
+    bool is_static;
+} full_chess;
+
 #endif

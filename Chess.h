@@ -21,21 +21,15 @@ void flip_perspective(chess *game);
 bool is_same_rank(offset a, offset b);
 bool is_same_file(offset a, offset b);
 void print_offset_table();
-move encode_string_move(char *focus_move);
+move encode_string(char *focus_move);
 bitboard flip_bitboard(bitboard board);
-void make_move(chess *game, char *focus_move);
 int set_legal_moves(chess *game, move *legal_moves);
 chess *clone(chess *game);
 void draw(chess *game);
 void set_from_source(chess *dest, chess *source);
-void reset(chess *output);
 offset get_next_offset(bitboard board, offset index);
 bool in_set(move *legal_moves, move focus_move);
-void print_legal_moves(chess *game, move *legal_moves);
-void display_move(char *focus_move, chess *game, move *legal_moves,
-                  int *game_length, chess *past_boards);
-void undo_move(chess *game, move *legal_moves, int *game_length,
-               chess *past_boards);
+
 void initialize_game(chess *game, move *legal_moves,
                      chess *past_boards);
 int add_en_passant_capture(chess *game, move *legal_moves, int legal_moves_count);
@@ -55,14 +49,12 @@ bitboard get_knight_destination_bitboard(chess *game, offset start_index);
 bitboard get_diagonal_destination_bitboard(chess *game, offset start_index);
 bitboard get_orthogonal_destination_bitboard(chess *game, offset start_index);
 bool is_legal_move(chess *game, move focus_move);
-void play_move_list(char *move_list[], int num_moves, chess *game, move *legal_moves,
-                    int *game_length, chess *past_boards);
 int set_pseudo_legal_moves(chess *game, move *legal_moves);
 int trim_legal_moves(chess *game, move *legal_moves);
-offset get_starting_offset(move focus_move) ;
-offset get_ending_offset(move focus_move) ;
+offset get_starting_offset(move focus_move);
+offset get_ending_offset(move focus_move);
 
-piece get_starting_piece(chess *game,move focus_move);
+piece get_starting_piece(chess *game, move focus_move);
 piece get_ending_piece(chess *game, move focus_move);
 
 piece get_promotion_piece(move focus_move);
@@ -72,7 +64,5 @@ void swap_sides(chess *game);
 bool in_check(chess *game);
 bitboard get_castle_pass_through_board(chess *game, move focus_move);
 bool attacking_offset(chess *game, offset focus_offset);
-bool game_over(chess *game);
-int perft(chess *game, int depth, move past_legal_moves[MAX_POSSIBLE_MOVES][MAX_GAME_LENGTH], bool top_call);
-void print_move(chess *game, move focus_move);
+bool chess_equal(chess *a, chess *b);
 #endif

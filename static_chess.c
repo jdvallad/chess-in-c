@@ -1,60 +1,131 @@
 #include "static_chess.h"
 #include "chess.h"
+#include "full_chess.h"
 #include "primitives.h"
 #include <stdio.h>
 #include <stdlib.h>
 
-void static_bit_move(chess *game, char *focus_move) {
-  bit_move(game, static_encode_string_move(game, focus_move));
+move static_encode_string(full_chess *game, char *focus_move) {
+  if (!(game->current_board->pawns & 1)) {
+    return encode_string(focus_move);
+  }
+  if (focus_move[0] == 'i' && focus_move[1] == 'n' && focus_move[2] == 'i' &&
+      focus_move[3] == 't' && focus_move[4] == '\0') {
+    return NULL_MOVE; // rejects moves aren't long enough
+  }
+  if (focus_move[0] == '\0' || focus_move[1] == '\0' || focus_move[2] == '\0' ||
+      focus_move[3] == '\0') {
+    return NULL_MOVE; // rejects moves aren't long enough
+  }
+  offset starting_offset =
+      (focus_move[0] - 'a') + 8 * (('9' - (focus_move[1] - '0')) - '1');
+  offset ending_offset =
+      (focus_move[2] - 'a') + 8 * (('9' - (focus_move[3] - '0')) - '1');
+  piece promotion_piece = none;
+  switch (focus_move[4]) {
+  case '\0':
+    break;
+  case 'q':
+    promotion_piece = queen;
+    break;
+  case 'r':
+    promotion_piece = rook;
+    break;
+  case 'b':
+    promotion_piece = bishop;
+    break;
+  case 'n':
+    promotion_piece = knight;
+    break;
+  default:
+    promotion_piece = none;
+    break;
+  }
+  return encode_move(starting_offset, ending_offset, promotion_piece);
+}
+
+void static_string_move(full_chess *game, char *focus_move) {
+  make_move(game, static_encode_string(game, focus_move));
   return;
 }
 
-void static_display_move(char *focus_move, chess *game, move *legal_moves,
-                         int *game_length, chess *past_boards) {
-  move real_move = static_encode_string_move(game, focus_move);
-  if (in_set(legal_moves, real_move)) {
-    bit_move(game, real_move);
-    *game_length += 1;
-    set_from_source(&past_boards[*game_length], game);
-    set_legal_moves(game, legal_moves);
-    static_print_game_state(game);
-    static_print_legal_moves(game, legal_moves);
+void static_print_move(full_chess *game, move the_move) {
+  if (!(game->current_board->pawns & 1)) {
+    offset starting_offset = the_move & 63;
+    printf("%c", 'a' + (starting_offset % 8));
+    printf("%c", '1' + (starting_offset / 8));
+    the_move = the_move >> 6;
+    offset ending_offset = the_move & 63;
+    printf("%c", 'a' + (ending_offset % 8));
+    printf("%c", '1' + (ending_offset / 8));
+    the_move = the_move >> 6;
+    piece starting_piece =
+        get_piece_at_offset(game->current_board, starting_offset);
+    switch (the_move & 3) {
+    case 0:
+      if ((starting_piece == pawn) && ending_offset > 55) {
+        printf("q");
+      }
+      break;
+    case 1:
+      printf("r");
+      break;
+    case 2:
+      printf("k");
+      break;
+    case 3:
+      printf("b");
+      break;
+    default:
+      break;
+    }
   } else {
-    printf("not a legal move!\n");
+    offset starting_offset = the_move & 63;
+    printf("%c", 'a' + (starting_offset % 8));
+    printf("%c", '8' - (starting_offset / 8));
+    the_move = the_move >> 6;
+    offset ending_offset = the_move & 63;
+    printf("%c", 'a' + (ending_offset % 8));
+    printf("%c", '8' - (ending_offset / 8));
+    the_move = the_move >> 6;
+    piece starting_piece =
+        get_piece_at_offset(game->current_board, starting_offset);
+    switch (the_move & 3) {
+    case 0:
+      if ((starting_piece == pawn) && ending_offset > 55) {
+        printf("q");
+      }
+      break;
+    case 1:
+      printf("r");
+      break;
+    case 2:
+      printf("k");
+      break;
+    case 3:
+      printf("b");
+      break;
+    default:
+      break;
+    }
   }
   return;
 }
 
-void static_play_move_list(char **move_list, int num_moves, chess *game,
-                           move *legal_moves, int *game_length,
-                           chess *past_boards) {
-  for (int i = 0; i < num_moves; i++) {
-    static_display_move(move_list[i], game, legal_moves, game_length,
-                        past_boards);
+void static_print_legal_moves(full_chess *game) {
+  printf("{");
+  for (int i = 0; game->current_legal_moves[i] != NULL_MOVE; i++) {
+    if (i > 0) {
+      printf(",");
+    }
+    static_print_move(game, game->current_legal_moves[i]);
   }
-}
-void static_undo_move(chess *game, move *legal_moves, int *game_length,
-                      chess *past_boards) {
-  if (*game_length == 0) {
-    return;
-  }
-  *game_length -= 1;
-  set_from_source(game, &past_boards[*game_length]);
-  set_legal_moves(game, legal_moves);
-  static_print_game_state(game);
-  static_print_legal_moves(game, legal_moves);
+  printf("}\n");
+  return;
 }
 
-void static_initialize_game(chess *game, move *legal_moves,
-                            chess *past_boards) {
-  reset(game);
-  set_from_source(&past_boards[0], game);
-  set_legal_moves(game, legal_moves);
-  static_print_game_state(game);
-  static_print_legal_moves(game, legal_moves);
-}
-
-void static_print_game_state(chess *game) {
+void static_print_board(full_chess *full_game) {
+  chess *game = full_game->current_board;
   if (!(game->pawns & 1)) {
     print_game_state(game);
     return;
@@ -104,103 +175,59 @@ void static_print_game_state(chess *game) {
   return;
 }
 
-move static_encode_string_move(chess *game, char *focus_move) {
-  if (!(game->pawns & 1)) {
-    return encode_string_move(focus_move);
+int static_perft(full_chess *game, int depth, bool top_call) {
+  if (depth < 1) {
+    return 0;
   }
-  offset starting_offset =
-      (focus_move[0] - 'a') + 8 * (('9' - (focus_move[1] - '0')) - '1');
-  offset ending_offset =
-      (focus_move[2] - 'a') + 8 * (('9' - (focus_move[3] - '0')) - '1');
-  piece promotion_piece = none;
-  switch (focus_move[4]) {
-  case '\0':
-    break;
-  case 'q':
-    promotion_piece = queen;
-    break;
-  case 'r':
-    promotion_piece = rook;
-    break;
-  case 'b':
-    promotion_piece = bishop;
-    break;
-  case 'n':
-    promotion_piece = knight;
-    break;
-  default:
-    promotion_piece = none;
-    break;
+  if (top_call) {
+    printf("go perft %d\n", depth);
   }
-  return encode_move(starting_offset, ending_offset, promotion_piece);
+  if (depth == 1) {
+    int index = 0;
+    while (game->current_legal_moves[index] != NULL_MOVE) {
+      if (top_call) {
+        static_print_move(game, game->current_legal_moves[index]);
+        printf(": 1\n");
+      }
+      index++;
+    }
+    if (top_call) {
+      printf("\nNodes searched: %d\n\n", index);
+    }
+    return index;
+  }
+  int output = 0;
+  int index = 0;
+  while (game->current_legal_moves[index] != NULL_MOVE) {
+    chess temp = *(game->current_board);
+    make_move(game, game->current_legal_moves[index]);
+    int perft_result = perft(game, depth - 1, false);
+    unmake_move(game);
+    output += perft_result;
+    if (top_call) {
+      static_print_move(game, game->current_legal_moves[index]);
+      printf(": %d\n", perft_result);
+    }
+    *(game->current_board) = temp;
+    index++;
+  }
+  if (top_call) {
+    printf("\nNodes searched: %d\n\n", output);
+  }
+  return output;
 }
 
-void static_print_legal_moves(chess *game, move *legal_moves) {
-  printf("{");
-  for (int i = 0; legal_moves[i] != NULL_MOVE; i++) {
-    if (i > 0) {
-      printf(",");
-    }
-    if (!(game->pawns & 1)) {
-      move the_move = legal_moves[i];
-      offset starting_offset = the_move & 63;
-      printf("%c", 'a' + (starting_offset % 8));
-      printf("%c", '1' + (starting_offset / 8));
-      the_move = the_move >> 6;
-      offset ending_offset = the_move & 63;
-      printf("%c", 'a' + (ending_offset % 8));
-      printf("%c", '1' + (ending_offset / 8));
-      the_move = the_move >> 6;
-      piece starting_piece = get_piece_at_offset(game, starting_offset);
-      switch (the_move & 3) {
-      case 0:
-        if ((starting_piece == pawn) && ending_offset > 55) {
-          printf("q");
-        }
-        break;
-      case 1:
-        printf("r");
-        break;
-      case 2:
-        printf("k");
-        break;
-      case 3:
-        printf("b");
-        break;
-      default:
-        break;
-      }
-    } else {
-      move the_move = legal_moves[i];
-      offset starting_offset = the_move & 63;
-      printf("%c", 'a' + (starting_offset % 8));
-      printf("%c", '8' - (starting_offset / 8));
-      the_move = the_move >> 6;
-      offset ending_offset = the_move & 63;
-      printf("%c", 'a' + (ending_offset % 8));
-      printf("%c", '8' - (ending_offset / 8));
-      the_move = the_move >> 6;
-      piece starting_piece = get_piece_at_offset(game, starting_offset);
-      switch (the_move & 3) {
-      case 0:
-        if ((starting_piece == pawn) && ending_offset > 55) {
-          printf("q");
-        }
-        break;
-      case 1:
-        printf("r");
-        break;
-      case 2:
-        printf("k");
-        break;
-      case 3:
-        printf("b");
-        break;
-      default:
-        break;
-      }
-    }
+void static_print_game_status(full_chess *game) {
+  if (!is_game_over(game)) {
+    printf("game status: ongoing, %s to move.\n",
+           game->current_board->pawns & 1 ? "white" : "black");
+    return;
   }
-  printf("}\n");
-  return;
+  if (is_stalemate(game)) {
+    printf("game status: stalemate, %s to move.\n",
+           game->current_board->pawns & 1 ? "white" : "black");
+    return;
+  }
+  printf("game status: %s won by checkmate\n",
+         game->current_board->pawns & 1 ? "white" : "black");
 }
