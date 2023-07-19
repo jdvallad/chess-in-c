@@ -2,8 +2,6 @@
 #define PRIMITIVES_H
 #define MAX_POSSIBLE_MOVES 512
 #define MAX_GAME_LENGTH 5870
-#define HASH_LENGTH_IN_CHARS
-#define PAWN_MASK ROW_8 | ROW_1;
 #include <stdint.h>
 #include <stdbool.h>
 #define ROW_1 0xff00000000000000
@@ -14,13 +12,13 @@
 #define ROW_6 0x0000000000ff0000
 #define ROW_7 0x000000000000ff00
 #define ROW_8 0x00000000000000ff
+#define PAWN_MASK 0xff000000000000ff
 #define NULL_MOVE 0x0
 #define MAX_FEN_LENGTH 100
 
 typedef uint64_t bitboard;
 typedef int8_t offset;
 typedef uint16_t move;
-extern bitboard offset_to_bitboard[64];
 typedef enum piece
 {
     rook = 5,

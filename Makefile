@@ -1,18 +1,25 @@
 CC = clang
 CFLAGS = -Wall -Wextra -Werror -Wpedantic
 LINKAGE = -lm
+SOURCES = chess.c static_chess.c full_chess.c legal_moves.c driver.c
+TEST_SOURCES = chess.c test_driver.c
 all: driver 
 
 driver:
-	$(CC) $(CFLAGS) -o driver chess.c static_chess.c full_chess.c driver.c $(LINKAGE)
+	$(CC) $(CFLAGS) -o driver $(SOURCES) $(LINKAGE)
+
+prototyper:
+	$(CC) $(CFLAGS) -o prototyper $(TEST_SOURCES) $(LINKAGE)
 
 run:
 	./driver
 
-debug:
-	$(CC) -g $(CFLAGS) -o driver chess.c static_chess.c full_chess.c driver.c $(LINKAGE)
+walk:
+	./prototyper
+
 clean:
 	rm -f driver
+	rm -f prototyper
 	rm -f *.o
 
 scan-build:
@@ -24,4 +31,6 @@ format:
 valgrind: debug
 	valgrind --leak-check=full -s ./driver
 
-test: clean format driver run
+drive: clean format driver run
+
+prototype: clean format prototyper walk
