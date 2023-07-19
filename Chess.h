@@ -64,4 +64,6 @@ bool in_check(chess *game);
 bitboard get_castle_pass_through_board(chess *game, move focus_move);
 bool attacking_offset(chess *game, offset focus_offset);
 bool chess_equal(chess *a, chess *b);
+bool attacked_offset(chess *game, offset focus_offset);
+bitboard get_attacked_board(chess *game);
 #endif

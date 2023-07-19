@@ -234,8 +234,19 @@ int set_legal_moves(chess *game, move *legal_moves) {
   }
   set_pseudo_legal_moves(game, legal_moves);
   int num_legal_moves = trim_legal_moves(game, legal_moves);
+  offset friendly_king_offset =
+      get_next_offset(true_kings(game) & game->friendly_pieces, -1);
+  bool in_check = attacked_offset(game, friendly_king_offset);
+  if (in_check) {
+    game->pawns |= 2;
+  } else {
+    game->pawns &= ~2;
+  }
   if (num_legal_moves == 0) {
     game->pawns |= 4;
+  }
+  if ((!in_check) && num_legal_moves == 0) {
+    game->pawns |= 8;
   }
   return num_legal_moves;
 }
@@ -758,17 +769,6 @@ void flip_perspective(chess *game) {
   game->friendly_pieces = game->enemy_pieces;
   game->enemy_pieces = temp;
   game->pawns ^= 1;
-  offset enemy_king_offset =
-      get_next_offset(true_kings(game) & game->enemy_pieces, -1);
-  bool in_check = false;
-  if (attacking_offset(game, enemy_king_offset)) {
-    in_check = true;
-  }
-  if (in_check) {
-    game->pawns |= 2;
-  } else {
-    game->pawns &= ~2;
-  }
   return;
 }
 
@@ -812,6 +812,32 @@ piece get_promotion_piece(move focus_move) {
   }
 }
 
+bool attacked_offset(chess *game, offset focus_offset) {
+  bitboard attack_board = offset_to_bitboard[focus_offset];
+  bitboard knights = (game->friendly_pieces | game->enemy_pieces) &
+                     (~game->orthogonal_pieces) & (~game->diagonal_pieces) &
+                     ~(true_pawns(game)) & ~(true_kings(game));
+  bitboard knight_attackers =
+      game->enemy_pieces & knights &
+      get_knight_destination_bitboard(game, focus_offset);
+  bitboard diagonal_attackers =
+      game->enemy_pieces & game->diagonal_pieces &
+      get_diagonal_destination_bitboard(game, focus_offset);
+  bitboard orthogonal_attackers =
+      game->enemy_pieces & game->orthogonal_pieces &
+      get_orthogonal_destination_bitboard(game, focus_offset);
+  bitboard king_attackers = game->enemy_pieces & true_kings(game) &
+                            get_king_destination_bitboard(game, focus_offset);
+  bitboard pawn_attackers =
+      game->enemy_pieces & game->pawns &
+      (compass(attack_board, -1, 1) | compass(attack_board, 1, 1));
+  if (pawn_attackers | knight_attackers | diagonal_attackers |
+      orthogonal_attackers | king_attackers) {
+    return true;
+  }
+  return false;
+}
+
 bool attacking_offset(chess *game, offset focus_offset) {
   bitboard attack_board = offset_to_bitboard[focus_offset];
   bitboard knights = (game->friendly_pieces | game->enemy_pieces) &
@@ -843,11 +869,20 @@ bool attacking_offset(chess *game, offset focus_offset) {
   }
   return false;
 }
-
 bitboard get_attacking_board(chess *game) {
   bitboard output = 0x0;
   for (offset i = 0; i < 64; i++) {
     if (attacking_offset(game, i)) {
+      output |= offset_to_bitboard[i];
+    }
+  }
+  return output;
+}
+
+bitboard get_attacked_board(chess *game) {
+  bitboard output = 0x0;
+  for (offset i = 0; i < 64; i++) {
+    if (attacked_offset(game, i)) {
       output |= offset_to_bitboard[i];
     }
   }
@@ -906,6 +941,7 @@ void bit_move(
 
     game->pawns |= offset_to_bitboard[starting_offset - 8];
   }
+  game->pawns &= ~ROW_1;
   flip_perspective(game);
 }
 

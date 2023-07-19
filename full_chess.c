@@ -40,7 +40,7 @@ void empty(full_chess *game) {
   game->board_history[0].orthogonal_pieces = 0;
   game->board_history[0].diagonal_pieces = 0;
   game->board_history[0].kings = 0;
-  game->current_board = &(game->board_history[0]);
+  game->current_board = game->board_history;
   game->current_legal_moves = (game->legal_moves_history[game->move_count]);
   game->current_legal_moves[0] = NULL_MOVE;
 }
@@ -51,7 +51,7 @@ void set_from_fen(full_chess *game, char *fen) {
   char focus_char = fen[str_index];
   bool is_numeric;
   int board_index;
-  board_index = 0;
+  board_index = 56;
   game->move_count = 0;
   while (focus_char != ' ') {
     is_numeric = (focus_char >= '0') && (focus_char <= '9');
@@ -60,6 +60,9 @@ void set_from_fen(full_chess *game, char *fen) {
       for (int i = 0; i < focus_char - '0'; i++) {
         remove_from_board(game->current_board, none, board_index);
         board_index++;
+        if (board_index % 8 == 0) {
+          board_index -= 16;
+        }
       }
     } else {
       focus_char = is_friendly ? focus_char : focus_char + ('A' - 'a');
@@ -68,38 +71,56 @@ void set_from_fen(full_chess *game, char *fen) {
       case 'K':
         focus_piece = king;
         add_to_board(game->current_board, focus_piece, board_index,
-                     !is_friendly);
+                     is_friendly);
         board_index++;
+        if (board_index % 8 == 0) {
+          board_index -= 16;
+        }
         break;
       case 'Q':
         focus_piece = queen;
         add_to_board(game->current_board, focus_piece, board_index,
-                     !is_friendly);
+                     is_friendly);
         board_index++;
+        if (board_index % 8 == 0) {
+          board_index -= 16;
+        }
         break;
       case 'R':
         focus_piece = rook;
         add_to_board(game->current_board, focus_piece, board_index,
-                     !is_friendly);
+                     is_friendly);
         board_index++;
+        if (board_index % 8 == 0) {
+          board_index -= 16;
+        }
         break;
       case 'B':
         focus_piece = bishop;
         add_to_board(game->current_board, focus_piece, board_index,
-                     !is_friendly);
+                     is_friendly);
         board_index++;
+        if (board_index % 8 == 0) {
+          board_index -= 16;
+        }
         break;
       case 'N':
         focus_piece = knight;
         add_to_board(game->current_board, focus_piece, board_index,
-                     !is_friendly);
+                     is_friendly);
         board_index++;
+        if (board_index % 8 == 0) {
+          board_index -= 16;
+        }
         break;
       case 'P':
         focus_piece = pawn;
         add_to_board(game->current_board, focus_piece, board_index,
-                     !is_friendly);
+                     is_friendly);
         board_index++;
+        if (board_index % 8 == 0) {
+          board_index -= 16;
+        }
         break;
       case '/':
         break;
@@ -173,17 +194,13 @@ void set_from_fen(full_chess *game, char *fen) {
     str_index++;
     focus_char = fen[str_index];
   }
-  game->move_count += 2 * count;
+  game->move_count += (game->current_board->pawns & 1) + 2 * (count - 1);
   if (game->half_move_count >= 75) {
     set_legal_moves(game->current_board, game->current_legal_moves);
     if (num_legal_moves(game) > 0) {
       toggle_stalemate(game);
     }
     toggle_game_over(game);
-  }
-  if (position_frequency(game) >= 5) {
-    toggle_game_over(game);
-    toggle_stalemate(game);
   }
   set_legal_moves(game->current_board, game->current_legal_moves);
   return;
