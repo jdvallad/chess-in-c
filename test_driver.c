@@ -8,17 +8,19 @@ int main() {
   gettimeofday(&t1, NULL);
   srand(t1.tv_usec * t1.tv_sec);
   chess *game = chess_create();
-  move focus_move;
   int count = 0;
-  while ((game->friendly_pieces) && (game->enemy_pieces)) {
-    focus_move = random_bit_move(game);
+  for (int i = 0; i < 10; i++) {
+    move focus_move = random_bit_move(game);
     bit_move(game, focus_move);
+    print_game_state(game);
     print_move(game, focus_move);
     printf("\n");
-    print_game_state(game);
+    print_bitboard(game->friendly_pieces);
     count++;
+    printf("this took %d iterations.\n", count);
+    // reset(game);
+    count = 0;
   }
-  printf("It took %d steps for one side to consume the other.\n", count);
   chess_delete(&game);
   return 0;
 }

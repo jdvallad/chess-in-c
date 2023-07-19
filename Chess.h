@@ -31,7 +31,7 @@ void castle_move(chess *game, move the_move);
 void en_passant_move(chess *game, move focus_move);
 void promotion_move(chess *game, move focus_move);
 void standard_move(chess *game, move focus_move);
-void bit_move(chess *game, move the_move);
+bool bit_move(chess *game, move the_move);
 bool is_same_rank(offset a, offset b);
 bool is_same_file(offset a, offset b);
 void remove_piece(chess *game, offset focus_offset);

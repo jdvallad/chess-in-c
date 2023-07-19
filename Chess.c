@@ -340,6 +340,10 @@ void flip_perspective(
   game->friendly_pieces = game->enemy_pieces;
   game->enemy_pieces = temp;
   game->pawns ^= 1;
+  bitboard castle_swap = ((game->pawns & 6) << 2) | ((game->pawns & 24) >> 2);
+  game->pawns &= ~30;
+
+  game->pawns |= castle_swap;
   return;
 }
 
@@ -419,7 +423,6 @@ void en_passant_move(chess *game,
 }
 
 void promotion_move(chess *game, move focus_move) {
-  printf("promotion\n");
   offset starting_offset = get_starting_offset(focus_move);
   offset ending_offset = get_ending_offset(focus_move);
   piece promotion_piece = get_promotion_piece(focus_move);
@@ -472,21 +475,42 @@ void standard_move(chess *game, move focus_move) {
   return;
 }
 
-void bit_move(chess *game, move focus_move) {
+bool bit_move(chess *game, move focus_move) {
   if ((offset_to_bitboard[get_starting_offset(focus_move)] &
        game->friendly_pieces) &&
       (!(offset_to_bitboard[get_ending_offset(focus_move)] &
          game->friendly_pieces))) {
     if (is_castle(game, focus_move)) {
-      castle_move(game, focus_move);
+      if (((get_ending_offset(focus_move) == 2) &&
+           !(game->friendly_pieces & offset_to_bitboard[3])) ||
+          ((get_ending_offset(focus_move) == 6) &&
+           !(game->friendly_pieces & offset_to_bitboard[5]))) {
+        castle_move(game, focus_move);
+        flip_perspective(game);
+        return true;
+      } else {
+        return false;
+      }
     } else if (is_promotion(game, focus_move)) {
       promotion_move(game, focus_move);
+      flip_perspective(game);
+      return true;
     } else if (is_en_passant(game, focus_move)) {
-      en_passant_move(game, focus_move);
+      if (!(offset_to_bitboard[get_ending_offset(focus_move) - 8] &
+            game->friendly_pieces)) {
+        en_passant_move(game, focus_move);
+        flip_perspective(game);
+        return true;
+      } else {
+        return false;
+      }
     } else {
       standard_move(game, focus_move);
+      flip_perspective(game);
+      return true;
     }
-    flip_perspective(game);
+  } else {
+    return false;
   }
 }
 
@@ -529,6 +553,11 @@ void add_piece(chess *game, piece focus_piece, bool is_friendly,
     }
     return;
   case knight:
+    if (is_friendly) {
+      game->friendly_pieces |= board;
+    } else {
+      game->enemy_pieces |= board;
+    }
     return;
   case bishop:
     game->diagonal_pieces |= board;
@@ -584,16 +613,8 @@ offset get_next_offset(bitboard board, offset index) {
 move random_bit_move(chess *game) {
   bitboard start_board = game->friendly_pieces;
   bitboard end_board = ~start_board;
-  offset starting_offset = -1;
-  offset ending_offset = -1;
-  int temp = random_in_range(0, pop_count(start_board));
-  for (int i = 0; i < temp; i++) {
-    starting_offset = get_next_offset(start_board, starting_offset);
-  }
-  temp = random_in_range(0, pop_count(end_board));
-  for (int i = 0; i < temp; i++) {
-    ending_offset = get_next_offset(end_board, ending_offset);
-  }
+  offset starting_offset = get_next_offset(start_board, -1);
+  offset ending_offset = get_next_offset(end_board, -1);
   move focus_move = encode_move(starting_offset, ending_offset, none);
   if (is_promotion(game, focus_move)) {
     return focus_move | random_in_range(0, 3); // add random promotion piece
