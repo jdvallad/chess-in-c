@@ -1,8 +1,9 @@
 #ifndef CHESS_H
 #define CHESS_H
-#include <stdint.h>
-#include <stdbool.h>
 #include "primitives.h"
+
+#include <stdbool.h>
+#include <stdint.h>
 bitboard VERTICAL_OFFSETS_BITBOARDS[17];
 bitboard HORIZONTAL_OFFSETS_BITBOARDS[17];
 bitboard offset_to_bitboard[64];
@@ -15,9 +16,8 @@ void print_game_state(chess *game);
 bool chess_equal(chess *a, chess *b);
 move encode_string(char *focus_move);
 piece get_piece_at_offset(chess *game, offset index);
-move encode_move(offset starting_offset, offset ending_offset,
-                 piece promotion_piece);
-bitboard flip_bitboard(bitboard board);
+move encode_move(offset starting_offset, offset ending_offset, piece promotion_piece);
+void flip_bitboard(bitboard *board);
 void flip_perspective(chess *game);
 offset get_starting_offset(move focus_move);
 offset get_ending_offset(move focus_move);
