@@ -25,16 +25,14 @@ int main_1() {
 char fen[MAX_FEN_LENGTH];
 int main() {
   full_chess *game = full_chess_create();
-  while (true) {
-    while (!is_game_over(game)) {
-      make_move(game, get_random_move(game));
-    }
-    // print_game_status(game);
-    if (game->current_board->pawns & 2 & (~1)) {
-      printf("%s\n", get_fen(game, fen));
-    }
-    reset(game);
-  }
+  set_from_fen(
+      game,
+      "r3k2r/pppbbppp/2n2q1P/1P2p3/3p4/BN2PNP1/P1PnQPB1/R3K2R b KQkq - 0 1");
+  printf("%s\n", get_fen(game, fen));
+  static_perft(game, 1, true);
+  static_print_board(game);
+
+  print_bitboard(get_attacked_board(game->current_board));
   full_chess_delete(&game);
   return 0;
 }

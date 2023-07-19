@@ -7,5 +7,4 @@ void static_print_move(full_chess *game, move focus_move);
 void static_print_legal_moves(full_chess *game);
 void static_print_board(full_chess *game);
 int static_perft(full_chess *game, int depth, bool top_call);
-void static_print_game_status(full_chess *game);
 #endif

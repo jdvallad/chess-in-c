@@ -216,18 +216,3 @@ int static_perft(full_chess *game, int depth, bool top_call) {
   }
   return output;
 }
-
-void static_print_game_status(full_chess *game) {
-  if (!is_game_over(game)) {
-    printf("game status: ongoing, %s to move.\n",
-           game->current_board->pawns & 1 ? "white" : "black");
-    return;
-  }
-  if (is_stalemate(game)) {
-    printf("game status: stalemate, %s to move.\n",
-           game->current_board->pawns & 1 ? "white" : "black");
-    return;
-  }
-  printf("game status: %s won by checkmate\n",
-         game->current_board->pawns & 1 ? "white" : "black");
-}

@@ -195,13 +195,6 @@ void set_from_fen(full_chess *game, char *fen) {
     focus_char = fen[str_index];
   }
   game->move_count += (game->current_board->pawns & 1) + 2 * (count - 1);
-  if (game->half_move_count >= 75) {
-    set_legal_moves(game->current_board, game->current_legal_moves);
-    if (num_legal_moves(game) > 0) {
-      toggle_stalemate(game);
-    }
-    toggle_game_over(game);
-  }
   set_legal_moves(game->current_board, game->current_legal_moves);
   return;
 }
@@ -450,6 +443,7 @@ void full_chess_initialize(full_chess *game) {
 
 void reset(full_chess *game) {
   game->move_count = 0;
+  game->half_move_count = 0;
   game->current_board = &(game->board_history[game->move_count]);
   game->current_legal_moves = (game->legal_moves_history[game->move_count]);
   return;
@@ -522,15 +516,11 @@ void make_move(full_chess *game, move real_move) {
     bit_move(game->current_board, real_move);
     game->current_legal_moves = (game->legal_moves_history[game->move_count]);
     if (game->half_move_count >= 75) {
-      set_legal_moves(game->current_board, game->current_legal_moves);
-      if (num_legal_moves(game) > 0) {
-        toggle_stalemate(game);
-      }
-      toggle_game_over(game);
+      game->current_board->pawns |= 4;
     }
     if (position_frequency(game) >= 5) {
-      toggle_game_over(game);
-      toggle_stalemate(game);
+      game->current_board->pawns |= 4;
+      game->current_board->pawns |= 8;
     }
     set_legal_moves(game->current_board, game->current_legal_moves);
   } else {
@@ -669,27 +659,4 @@ void print_board(full_chess *full_game) {
   }
   printf("     a   b   c   d   e   f   g   h  \n\n");
   return;
-}
-
-bool is_game_over(full_chess *game) { return game->current_board->pawns & 4; }
-
-void toggle_game_over(full_chess *game) { game->current_board->pawns ^= 4; }
-
-bool is_stalemate(full_chess *game) { return game->current_board->pawns & 8; }
-
-void toggle_stalemate(full_chess *game) { game->current_board->pawns ^= 8; }
-
-void print_game_status(full_chess *game) {
-  if (!is_game_over(game)) {
-    printf("game status: ongoing, %s to move.\n",
-           game->current_board->pawns & 1 ? "1st player" : "2nd player");
-    return;
-  }
-  if (is_stalemate(game)) {
-    printf("game status: stalemate, %s to move.\n",
-           game->current_board->pawns & 1 ? "1st player" : "2nd player");
-    return;
-  }
-  printf("game status: %s won by checkmate\n",
-         game->current_board->pawns & 1 ? "1st player" : "2nd player");
 }
