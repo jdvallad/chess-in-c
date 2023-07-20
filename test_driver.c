@@ -5,21 +5,12 @@
 #include <stdlib.h>
 #include <sys/time.h>
 int main() {
-    struct timeval t1;
-    gettimeofday(&t1, NULL);
-    srand(t1.tv_usec * t1.tv_sec);
-    chess *game = chess_create();
-    bit_move(game, encode_string("e2e4"));
-    print_game_state(game);
-    print_bitboard(game->pawns);
-    chess_delete(&game);
-    return 0;
-}
-
-int main_1() {
-    bitboard board = ~0x0;
-    for (offset index = -1; (index = get_next_offset(board, index)) < 64;) {
-        printf("%d\n", index);
+    bitboard temp = (1ull) | (1ull << 8) | (1ull << 16) | (1ull << 24);
+    temp |= temp << 32;
+    for (int i = 0; i < 8; i++) {
+        printf("#define COL_%d 0x%lx\n", (i + 1), temp);
+        //print_bitboard(temp);
+        temp <<= 1;
     }
     return 0;
 }
