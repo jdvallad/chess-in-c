@@ -128,7 +128,7 @@ u32 encode_move(chess *game, int start_offset, int end_offset, u8 promotion_piec
     // previous castle rights: 16-19
     // previous en passant squares: 20-23
     // previous in check bits: 24-25
-    // captured piece: 26-28
+    // captured piece: 26-28q
     // 2nd captured piece: 29-31
     u32 move = 0;
     switch (promotion_piece) {
