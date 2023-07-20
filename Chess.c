@@ -119,18 +119,17 @@ u8 get_piece_at_offset(chess *game, int index) {
     return id;
 }
 
-u32 encode_move(int start_offset, int end_offset, u8 promotion_piece) {
-    // moves are encoded as following
-    // promotion piece: 2 bits
-    // start offset: 6 bits
-    // end offset: 6 bits
-    // move type: 2 bits
-    // previous castle rights: 4 bits
-    // previous en passant squares: 4 bits
-    // previous in check bits: 2 bits
-    // captured piece: 3 bits
-    // 2nd captured piece: 3 bits (this can only happen with castle/en-passant double captures (very rare))
-    // total: 32 bits
+u32 encode_move(chess *game, int start_offset, int end_offset, u8 promotion_piece) {
+    // moves are encoded in the following bit positions (1ull << x)
+    // promotion piece: 0-1
+    // start offset: 2-7
+    // end offset: 8-13
+    // move type: 14-15
+    // previous castle rights: 16-19
+    // previous en passant squares: 20-23
+    // previous in check bits: 24-25
+    // captured piece: 26-28
+    // 2nd captured piece: 29-31
     u32 move = 0;
     switch (promotion_piece) {
     case queen: output |= 0; break;

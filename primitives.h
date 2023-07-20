@@ -2,7 +2,7 @@
 #include <stdint.h>
 #ifndef PRIMITIVES_H
 #define PRIMITIVES_H
-#define MAX_POSSIBLE_MOVES 512
+#define MAX_LEGAL_MOVES    512
 #define MAX_GAME_LENGTH    5870
 #define NULL_MOVE          0x0
 #define MAX_FEN_LENGTH     100
@@ -40,21 +40,22 @@
 #define NONE               0
 
 typedef uint64_t bitboard;
-typedef uint64_t u64;
 typedef uint32_t u32;
 typedef uint16_t u16;
 typedef uint8_t u8;
 
 typedef struct chess {
-    bitboard
-        pawns; // en_passant is stored on 8th rank of bits, and is_color_flipped stored in first bit
-    // castle rights stored in next 4 bits
-    // is_color_flipped = game->pawns & 1
-    // K = game->pawns & 2
-    // Q = game->pawns & 4
-    // k = game->pawns & 8
-    // q = game->pawns & 16
-    bitboard friendly_pieces;
+    bitboard pawns; // ROW_1 and ROW_8 are populated with important information about the game
+    // COL 1 contains is_color_flipped bools.
+    // COLS 2-3 contain castle rights.
+    // COLS 4-6 contain en-passant offsets.
+    // COL 7 contains en-passant is_toggled bools.
+    // COL 8 contains in-check bools.
+    // ROW_1 contains friendly information.
+    // ROW_8 contains enemy information.
+    // ex: ROW_1 & COL_8 contains the bit for whether you are in check.
+    // ex: ROW_8 & COL_8 contains the bit for whether the enemy is in check (aka you can capture their king).
+    bitboard friendly_pieces; // all other bitboards only contain piece location information.
     bitboard enemy_pieces;
     bitboard orthogonal_pieces;
     bitboard diagonal_pieces;
@@ -62,13 +63,20 @@ typedef struct chess {
 } chess;
 
 typedef struct full_chess {
-    chess board_history[MAX_GAME_LENGTH];
-    chess *current_board;
-    int move_count;
-    int half_move_count;
-    move legal_moves_history[MAX_POSSIBLE_MOVES][MAX_GAME_LENGTH];
-    move *current_legal_moves;
-    bool is_static;
+    chess board_history
+        [MAX_GAME_LENGTH]; // all past board positions, NOT DELIMITED. use move_count to index.
+    u32 move_history
+        [MAX_GAME_LENGTH]; // all moves made thus far, NOT DELIMITED. use move_count to index.
+    u32 current_legal_moves
+        [MAX_LEGAL_MOVES]; // the current legal move list, delimited by a NULL_MOVE.
+    chess *game; // the game! is baller.
+    u16 move_count; // number of moves, at init has value 0 (should really be called ply count).
+    u8 half_move_count; // keeps track of moves since last caputure/pawn push.
+    bool
+        is_static; // if true, printing boards, printing moves, and inputting moves will be consistent with true chess.
+    bool
+        is_draw; // this gets enabled due to 7-fold repetition, or due to 75 move rule, or due to stalemate.
+    // if the 75 move rule activates as checkmate is delivered, this flag will be FALSE.
 } full_chess;
 
 #endif
