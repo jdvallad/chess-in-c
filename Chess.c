@@ -88,7 +88,7 @@ bool chess_equal(chess *a, chess *b) {
            && (a->friendly_pieces == b->friendly_pieces);
 }
 
-u32 encode_string(char *move) {
+u64 encode_string(char *move) {
     if (move[0] == 'i' && move[1] == 'n' && move[2] == 'i' && move[3] == 't' && move[4] == '\0') {
         return NULL_MOVE; // rejects moves aren't long enough
     }
