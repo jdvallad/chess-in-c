@@ -1,45 +1,48 @@
 #ifndef CHESS_H
 #define CHESS_H
+#include "chess.h"
 #include "primitives.h"
 
 #include <stdbool.h>
 #include <stdint.h>
-bitboard VERTICAL_OFFSETS_BITBOARDS[17];
-bitboard HORIZONTAL_OFFSETS_BITBOARDS[17];
-bitboard offset_to_bitboard[64];
+#include <stdio.h>
+#include <stdlib.h>
+
 chess *chess_create();
 void reset(chess *game);
 void chess_delete(chess **input);
-void print_bitboard(bitboard board);
-bitboard compass(bitboard input, offset horizontal, offset vertical);
+void print_bitboard(u64 board);
 void print_game_state(chess *game);
+char piece_to_char(u8 piece);
+u8 char_to_piece(char piece);
 bool chess_equal(chess *a, chess *b);
-move encode_string(char *focus_move);
-piece get_piece_at_offset(chess *game, offset index);
-move encode_move(offset starting_offset, offset ending_offset, piece promotion_piece);
-void flip_bitboard(bitboard *board);
+u8 get_piece_at_offset(chess *game, int index);
+void flip_bitboard(u64 *board);
+void swap_bitboards(u64 *board, u64 *other);
 void flip_perspective(chess *game);
-offset get_starting_offset(move focus_move);
-offset get_ending_offset(move focus_move);
-piece get_starting_piece(chess *game, move focus_move);
-piece get_ending_piece(chess *game, move focus_move);
-piece get_promotion_piece(move focus_move);
-bool is_castle(chess *game, move focus_move);
-bool is_promotion(chess *game, move focus_move);
-bool is_en_passant(chess *game, move focus_move);
-void castle_move(chess *game, move the_move);
-void en_passant_move(chess *game, move focus_move);
-void promotion_move(chess *game, move focus_move);
-void standard_move(chess *game, move focus_move);
-bool bit_move(chess *game, move the_move);
-bool is_same_rank(offset a, offset b);
-bool is_same_file(offset a, offset b);
-void remove_piece(chess *game, offset focus_offset);
-void add_piece(chess *game, piece focus_piece, bool is_friendly, offset focus_offset);
-void move_piece(chess *game, offset start_offset, offset end_offset);
-offset get_next_offset(bitboard board, offset index);
-move random_bit_move(chess *game);
-int random_in_range(int min, int max);
-int pop_count(bitboard board);
-void print_move(chess *game, move focus_move);
+bool is_same_rank(int a, int b);
+bool is_same_file(int a, int b);
+void remove_piece(chess *game, int offset);
+void add_piece(chess *game, u8 piece, int offset);
+int get_next_offset(u64 board, int offset);
+int pop_count(u64 board);
+// move functions begin below
+
+u64 encode_move(int start_offset, int end_offset, bool en_passant_capture, bool castle_king,
+    bool castle_queen, u8 promotion_piece, u8 start_piece, u8 end_piece, u8 en_passant_piece,
+    u8 friendly_data, u8 enemy_data);
+int get_start_offset(u64 move);
+int get_end_offset(u64 move);
+bool is_en_passant_move(u64 move);
+bool is_castle_king_move(u64 move);
+bool is_castle_queen_move(u64 move);
+u8 get_promotion_piece(u64 move);
+u8 get_start_piece(u64 move);
+u8 get_end_piece(u64 move);
+u8 get_en_passant_piece(u64 move);
+u8 get_friendly_data(u64 move);
+u8 get_enemy_data(u64 move);
+int get_en_passant_offset(chess *game);
+void make_move(chess *game, u64 move);
+void print_move(u64 move);
 #endif
