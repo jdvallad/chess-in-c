@@ -28,7 +28,7 @@ scan-build:
 format:
 	$(CC)-format -i -style=file *.c
 
-valgrind: debug
+valgrind:
 	valgrind --leak-check=full -s ./driver
 
 drive: clean format driver run
