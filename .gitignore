@@ -1,0 +1,22 @@
+# Build artifacts
+build/
+*.o
+*.d
+
+# Legacy root binaries
+/driver
+/prototyper
+/demo
+/chess_play
+/chess_web
+/chess_elo
+/chess_uci
+
+# OS / editor noise
+.DS_Store
+*.swp
+
+# Zero-C Python venv & training outputs
+.venv-az/
+src/az/__pycache__/
+data/az/

@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chess-in-C :: Dark Studio</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <canvas id="confetti-canvas" class="confetti-canvas"></canvas>
+
+  <header class="topbar">
+    <div class="brand" id="brand-home" title="Return to Home Menu">
+      <span class="brand-mark">&#9816;</span>
+      <span class="brand-title">CHESS-IN-C</span>
+      <span class="brand-tag">TITAN-C &bull; ZERO-C</span>
+    </div>
+    <div class="topbar-controls">
+      <button id="btn-home" class="btn btn-home" title="Main Menu (Esc / menu)">&#8962; Menu</button>
+      <div class="game-top-controls" id="game-top-controls">
+        <select id="mode-select" title="Game Mode">
+          <option value="white">Play White vs Engine</option>
+          <option value="black">Play Black vs Engine</option>
+          <option value="2p">2-Player Local</option>
+          <option value="watch">Watch Bot vs Bot</option>
+          <option value="analysis">Analysis Board</option>
+        </select>
+        <div class="level-group" id="white-level-wrap">
+          <label for="white-level">W:</label>
+          <select id="white-level"></select>
+        </div>
+        <div class="level-group" id="black-level-wrap">
+          <label for="black-level">B:</label>
+          <select id="black-level"></select>
+        </div>
+        <button id="btn-new" class="btn btn-primary" title="Start New Game">New Game</button>
+        <button id="btn-analysis-toggle" class="btn btn-accent" title="Enter/Exit Analysis Mode (analyze)">&#128269; Analysis</button>
+      </div>
+      <button id="btn-puzzles" class="btn btn-purple" title="Tactical Puzzle Studio">&#129513; Puzzles</button>
+      <button id="btn-history" class="btn" title="Saved Game History">&#128220; History</button>
+      <button id="btn-az-lab" class="btn btn-magenta" title="Zero-C AlphaZero Self-Play Lab">&#129504; Zero-C</button>
+      <button id="btn-gauntlet" class="btn" title="Live Multithreaded Elo Gauntlet (gauntlet)">&#127942; Elo</button>
+      <button id="btn-import-pgn" class="btn" title="Import PGN into Analysis (import)">&#8681; PGN</button>
+      <select id="theme-select" class="theme-select" title="Board Theme">
+        <option value="sage">&#127912; Sage</option>
+        <option value="tournament">&#127912; Green</option>
+        <option value="walnut">&#127912; Walnut</option>
+        <option value="ocean">&#127912; Ocean</option>
+        <option value="amethyst">&#127912; Royal</option>
+      </select>
+      <button id="btn-sound" class="btn btn-icon" title="Toggle Sound Effects (sound)">&#128266;</button>
+    </div>
+  </header>
+
+  <!-- Full-Screen Home Menu Dashboard -->
+  <section id="home-screen" class="home-screen">
+    <div class="home-hero">
+      <div class="hero-left">
+        <div class="hero-badge">
+          <span class="pulse-dot"></span>
+          <span>TITAN-C v4 (KING-BUCKETED AVX2 NNUE) &bull; ZERO-C (ALPHAZERO SELF-PLAY MCTS) &bull; KPK BITBASE</span>
+        </div>
+        <h1 class="hero-title">Chess-in-C <span class="hero-accent">Studio</span></h1>
+        <p class="hero-sub">Challenge <strong>Titan-C v4</strong> (our ~2367-Elo King-Bucketed NNUE engine), train and watch <strong>Zero-C</strong> learn chess from scratch via pure rules-only AlphaZero self-play, solve 28 master tactics, and review games with Estimated Elo.</p>
+      </div>
+      <div class="hero-stats">
+        <div class="stat-tile">
+          <span class="stat-label">Puzzle Rating</span>
+          <span class="stat-val stat-purple" id="home-pz-rating">1200</span>
+          <span class="stat-sub" id="home-pz-solved">0 / 28 solved</span>
+        </div>
+        <div class="stat-tile">
+          <span class="stat-label">Puzzle Streak</span>
+          <span class="stat-val stat-amber" id="home-pz-streak">&#128293; 0</span>
+          <span class="stat-sub" id="home-pz-best">Best: 0</span>
+        </div>
+        <div class="stat-tile">
+          <span class="stat-label">Games Logged</span>
+          <span class="stat-val stat-blue" id="home-hist-count">0</span>
+          <span class="stat-sub" id="home-hist-wdl">0W &bull; 0D &bull; 0L</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Resume Banner (visible if a game is currently in progress) -->
+    <div id="home-resume-banner" class="resume-banner hidden">
+      <div class="resume-info">
+        <span class="resume-dot"></span>
+        <span id="home-resume-text">Active game in progress</span>
+      </div>
+      <button id="btn-home-resume" class="btn btn-primary">Resume Board &rarr;</button>
+    </div>
+
+    <!-- 6 Interactive Feature Mode Cards -->
+    <div class="home-grid">
+      <!-- Card 1: Play vs Engine -->
+      <div class="menu-card card-green">
+        <div class="mc-head">
+          <span class="mc-icon">&#9876;</span>
+          <div>
+            <h2>Play vs Engine</h2>
+            <p>Challenge Titan-C (L1–L6 / Elo), Zero-C, or Stockfish</p>
+          </div>
+        </div>
+        <div class="mc-body">
+          <div class="color-picker" id="home-color-picker">
+            <button type="button" class="color-opt active" data-color="white">&#9812; White</button>
+            <button type="button" class="color-opt" data-color="random">&#127922; Random</button>
+            <button type="button" class="color-opt" data-color="black">&#9818; Black</button>
+          </div>
+          <div class="color-picker" id="home-strength-mode">
+            <button type="button" class="color-opt active" data-smode="preset">Presets (L1–L6 / SF)</button>
+            <button type="button" class="color-opt" data-smode="elo">&#127919; Custom Elo Slider</button>
+          </div>
+          <label class="mc-field" id="home-preset-wrap">
+            <span>Opponent Strength</span>
+            <select id="home-opponent"></select>
+          </label>
+          <div class="mc-field hidden" id="home-elo-slider-wrap">
+            <div class="elo-slider-head">
+              <span>Target Engine Rating</span>
+              <span class="elo-slider-badge" id="home-elo-badge">1600 Elo &bull; Club</span>
+            </div>
+            <input type="range" id="home-elo-slider" class="elo-slider" min="800" max="2600" step="50" value="1600">
+            <div class="elo-slider-ticks"><span>800</span><span>1400</span><span>1800</span><span>2200</span><span>2600</span></div>
+          </div>
+        </div>
+        <div class="mc-actions">
+          <button id="btn-home-play" class="btn btn-primary btn-lg">Start Match &rarr;</button>
+          <button id="btn-home-2p" class="btn btn-lg" title="Local Pass & Play">2-Player</button>
+        </div>
+      </div>
+
+      <!-- Card 2: Tactical Puzzles -->
+      <div class="menu-card card-purple">
+        <div class="mc-head">
+          <span class="mc-icon">&#129513;</span>
+          <div>
+            <h2>Tactical Puzzles</h2>
+            <p>28 curated mates, sacrifices &amp; endgame studies</p>
+          </div>
+        </div>
+        <div class="mc-body">
+          <div class="pz-progress-wrap">
+            <div class="pz-progress-bar"><div class="pz-progress-fill" id="home-pz-fill"></div></div>
+            <span class="pz-progress-lbl" id="home-pz-pct">0%</span>
+          </div>
+          <div class="theme-chips" id="home-pz-themes">
+            <button type="button" class="chip active" data-theme="all">All</button>
+            <button type="button" class="chip" data-theme="mate">Mates</button>
+            <button type="button" class="chip" data-theme="tactic">Tactics</button>
+            <button type="button" class="chip" data-theme="sacrifice">Sacrifices</button>
+            <button type="button" class="chip" data-theme="endgame">Endgames</button>
+            <button type="button" class="chip" data-theme="master">Master</button>
+          </div>
+        </div>
+        <div class="mc-actions">
+          <button id="btn-home-puzzles" class="btn btn-purple btn-lg">Solve Next Puzzle &rarr;</button>
+          <button id="btn-home-puzzle-list" class="btn btn-lg">Browse</button>
+        </div>
+      </div>
+
+      <!-- Card 3: Analysis Studio -->
+      <div class="menu-card card-blue">
+        <div class="mc-head">
+          <span class="mc-icon">&#128300;</span>
+          <div>
+            <h2>Analysis Studio</h2>
+            <p>Live Top-3 Multi-PV, eval graph &amp; Elo review</p>
+          </div>
+        </div>
+        <div class="mc-body">
+          <p class="mc-desc">Step through any game move-by-move, hover candidate lines for instant arrows, import PGNs, and compute Estimated Game Elo.</p>
+        </div>
+        <div class="mc-actions">
+          <button id="btn-home-analysis" class="btn btn-accent btn-lg">Open Analysis &rarr;</button>
+          <button id="btn-home-import" class="btn btn-lg">Import PGN</button>
+        </div>
+      </div>
+
+      <!-- Card 4: Game History -->
+      <div class="menu-card card-amber">
+        <div class="mc-head">
+          <span class="mc-icon">&#128220;</span>
+          <div>
+            <h2>Game History</h2>
+            <p>Auto-saved archive with openings &amp; Elo ratings</p>
+          </div>
+        </div>
+        <div class="mc-body">
+          <div id="home-recent-games" class="recent-games-mini">
+            <div class="empty-hint">Completed games save here automatically.</div>
+          </div>
+        </div>
+        <div class="mc-actions">
+          <button id="btn-home-history" class="btn btn-amber btn-lg">Browse Archive &rarr;</button>
+        </div>
+      </div>
+
+      <!-- Card 5: Engine Arena (Watch) -->
+      <div class="menu-card card-cyan">
+        <div class="mc-head">
+          <span class="mc-icon">&#129302;</span>
+          <div>
+            <h2>Engine Arena</h2>
+            <p>Spectate Titan-C vs Zero-C vs Stockfish</p>
+          </div>
+        </div>
+        <div class="mc-body mc-arena-row">
+          <label class="mc-field">
+            <span>White Bot</span>
+            <select id="home-watch-w"></select>
+          </label>
+          <label class="mc-field">
+            <span>Black Bot</span>
+            <select id="home-watch-b"></select>
+          </label>
+        </div>
+        <div class="mc-actions">
+          <button id="btn-home-watch" class="btn btn-cyan btn-lg">Launch Match &rarr;</button>
+        </div>
+      </div>
+
+      <!-- Card 6: Elo Calibration Gauntlet -->
+      <div class="menu-card card-orange">
+        <div class="mc-head">
+          <span class="mc-icon">&#127942;</span>
+          <div>
+            <h2>Elo Calibration Gauntlet</h2>
+            <p>Fair 500 ms Stockfish FIDE calibration on all cores</p>
+          </div>
+        </div>
+        <div class="mc-body">
+          <div id="home-elo-mini" class="elo-mini-grid">
+            <div class="empty-hint">Run gauntlet to calibrate levels 1–6.</div>
+          </div>
+        </div>
+        <div class="mc-actions">
+          <button id="btn-home-gauntlet" class="btn btn-orange btn-lg">Open Gauntlet &rarr;</button>
+        </div>
+      </div>
+
+      <!-- Card 7: Zero-C AlphaZero Self-Play Lab (Full-Width Showcase Card) -->
+      <div class="menu-card card-magenta card-wide">
+        <div class="mc-head">
+          <span class="mc-icon">&#129504;</span>
+          <div style="flex:1">
+            <h2>Zero-C &mdash; AlphaZero Self-Play Lab</h2>
+            <p>Pure tabula rasa SE-ResNet + C Batched MCTS (Playout Cap Randomization, WDL + Moves-Left, Forced Playouts). Knows <em>only</em> the rules of chess.</p>
+          </div>
+          <span class="az-home-pill" id="home-az-pill">Idle &bull; Gen 0</span>
+        </div>
+        <div class="az-home-stats" id="home-az-stats">
+          <span>Gen: <strong id="home-az-gen">0</strong></span>
+          <span>Self-Play Games: <strong id="home-az-games">0</strong></span>
+          <span>Positions: <strong id="home-az-pos">0</strong></span>
+          <span>Compute: <strong id="home-az-dev">Checking...</strong></span>
+        </div>
+        <div class="mc-actions">
+          <button id="btn-home-az-lab" class="btn btn-magenta btn-lg">Open Training Lab &rarr;</button>
+          <button id="btn-home-play-az" class="btn btn-lg">&#9876; Play vs Zero-C</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <main class="workspace hidden" id="workspace">
+    <!-- Left / Center: Eval Bar + Board Stage -->
+    <section class="stage">
+      <div class="player-strip" id="top-strip">
+        <div class="player-info">
+          <span class="player-dot" id="top-dot"></span>
+          <span class="player-name" id="top-name">Titan-C</span>
+          <span class="captured-row" id="top-captured"></span>
+          <span class="mat-adv" id="top-adv"></span>
+        </div>
+        <div class="status-pill" id="status-pill">White to move</div>
+      </div>
+
+      <div class="board-row">
+        <!-- Vertical Evaluation Bar (toggleable) -->
+        <div class="eval-wrap" id="eval-wrap" title="Engine Evaluation (White perspective)">
+          <div class="eval-label" id="eval-label">0.0</div>
+          <div class="eval-bar" id="eval-bar">
+            <div class="eval-fill-white" id="eval-fill-white"></div>
+          </div>
+        </div>
+
+        <!-- 8x8 Interactive Board + SVG Arrow Overlay -->
+        <div class="board-shell" id="board-shell">
+          <div class="board" id="board"></div>
+          <svg class="arrow-layer" id="arrow-layer" viewBox="0 0 800 800" preserveAspectRatio="none"></svg>
+        </div>
+      </div>
+
+      <div class="player-strip" id="bottom-strip">
+        <div class="player-info">
+          <span class="player-dot" id="bottom-dot"></span>
+          <span class="player-name" id="bottom-name">Human</span>
+          <span class="captured-row" id="bottom-captured"></span>
+          <span class="mat-adv" id="bottom-adv"></span>
+        </div>
+        <div class="meta-pills">
+          <span class="opening-pill" id="opening-pill">Starting Position</span>
+          <span id="meta-move">Move 1</span>
+          <span id="meta-clock">Clock 0/150</span>
+          <span id="meta-legal">20 legal</span>
+        </div>
+      </div>
+
+      <!-- Puzzle HUD Panel (visible in puzzle mode) -->
+      <div class="puzzle-bar hidden" id="puzzle-bar">
+        <div class="puzzle-top">
+          <div class="puzzle-meta">
+            <span class="pz-id-badge" id="pz-id-badge">#1</span>
+            <strong class="pz-title" id="pz-title">Back-Rank Knockout</strong>
+            <span class="pz-theme-pill" id="pz-theme-pill">mate</span>
+            <span class="pz-rating-pill" id="pz-rating-pill">&#9733; 800</span>
+          </div>
+          <div class="puzzle-hud-stats">
+            <span class="pz-hud-chip" id="pz-hud-rating">You: 1200</span>
+            <span class="pz-hud-chip pz-streak" id="pz-hud-streak">&#128293; 0</span>
+          </div>
+        </div>
+        <p class="pz-desc" id="pz-desc">Find the winning tactic!</p>
+        <div class="pz-feedback" id="pz-feedback">Your turn — find the best move!</div>
+        <div class="pz-actions">
+          <button id="btn-pz-hint" class="btn btn-sm">&#128161; Hint</button>
+          <button id="btn-pz-solve" class="btn btn-sm">&#128065; Solution</button>
+          <button id="btn-pz-retry" class="btn btn-sm">&#8634; Retry</button>
+          <button id="btn-pz-next" class="btn btn-sm btn-purple">Next Puzzle &rarr;</button>
+          <button id="btn-pz-browse" class="btn btn-sm">&#9776; All Puzzles</button>
+        </div>
+      </div>
+
+      <!-- Analysis Controls & Live Engine PV Bar (visible in analysis mode) -->
+      <div class="analysis-bar hidden" id="analysis-bar">
+        <div class="analysis-top">
+          <div class="nav-group">
+            <button id="btn-nav-start" class="btn btn-sm" title="Start (Home)">&#9198;</button>
+            <button id="btn-nav-prev" class="btn btn-sm" title="Previous Move (&larr;)">&#9664;</button>
+            <span class="nav-ply" id="nav-ply">0 / 0</span>
+            <button id="btn-nav-next" class="btn btn-sm" title="Next Move (&rarr;)">&#9654;</button>
+            <button id="btn-nav-end" class="btn btn-sm" title="End (End)">&#9197;</button>
+          </div>
+          <label class="toggle-check" title="Show Engine Best Move Arrow">
+            <input type="checkbox" id="chk-best-arrow" checked>
+            Best Arrow
+          </label>
+          <label class="toggle-check hidden" id="sf-analyze-wrap" title="Use Stockfish for Live Analysis">
+            <input type="checkbox" id="chk-sf-analyze" checked>
+            Stockfish
+          </label>
+          <button id="btn-play-from-here" class="btn btn-sm btn-primary" title="Resume playing vs Engine from this position">Play From Here</button>
+        </div>
+        <div class="analysis-pv" id="analysis-pv">
+          <span class="pv-badge" id="pv-eval">0.0</span>
+          <span class="pv-depth" id="pv-depth">d0</span>
+          <span class="pv-line" id="pv-line">Engine ready...</span>
+        </div>
+        <div class="analysis-lines hidden" id="analysis-lines"></div>
+      </div>
+
+      <!-- Action Toolbar -->
+      <div class="toolbar">
+        <button id="btn-undo" class="btn" title="Undo Move (u)">&#8617; Undo</button>
+        <button id="btn-hint" class="btn" title="Engine Hint (hint)">&#128161; Hint</button>
+        <button id="btn-flip" class="btn" title="Flip Board (flip)">&#8645; Flip</button>
+        <button id="btn-autoflip" class="btn" title="Auto-Flip to Side to Move (autoflip)">&#8635; Auto-Flip</button>
+        <button id="btn-eval-toggle" class="btn btn-toggled" title="Show/Hide Eval Bar (eval)">&#9646; Eval</button>
+        <button id="btn-review" class="btn btn-accent" title="Post-Game Review with Est. Elo (review)">&#9733; Review</button>
+        <button id="btn-save-game" class="btn" title="Save Current Game to History">&#128190; Save</button>
+        <button id="btn-pgn" class="btn" title="Show / Copy PGN (pgn)">PGN</button>
+        <button id="btn-fen" class="btn" title="View / Load FEN (fen)">FEN</button>
+      </div>
+
+      <!-- Bot vs Bot Controls (visible in watch mode) -->
+      <div class="watch-bar hidden" id="watch-bar">
+        <button id="btn-watch-toggle" class="btn btn-primary">&#9208; Pause</button>
+        <button id="btn-watch-step" class="btn">&#9197; Step 1 Move</button>
+        <label class="speed-label">
+          Delay: <span id="speed-val">350ms</span>
+          <input type="range" id="watch-speed" min="0" max="1500" step="50" value="350">
+        </label>
+      </div>
+    </section>
+
+    <!-- Right: Move History + Interactive Terminal Console -->
+    <aside class="side-panel">
+      <div class="card history-card">
+        <div class="card-header">
+          <span>Move History (SAN)</span>
+          <span class="card-sub" id="history-result">*</span>
+        </div>
+        <div class="history-list" id="history-list">
+          <div class="empty-hint">No moves played yet.</div>
+        </div>
+      </div>
+
+      <div class="card terminal-card">
+        <div class="card-header">
+          <span>Terminal Console</span>
+          <span class="card-sub">SAN / Coords / Commands</span>
+        </div>
+        <div class="terminal-output" id="terminal-output"></div>
+        <form class="terminal-input-row" id="terminal-form" autocomplete="off">
+          <span class="prompt" id="terminal-prompt">White&gt;</span>
+          <input type="text" id="terminal-input" placeholder="Nf3, e4, O-O, e2e4, e2, analyze, eval, autoflip, help..." spellcheck="false">
+        </form>
+      </div>
+    </aside>
+  </main>
+
+  <!-- Floating Transparent Drag Ghost -->
+  <div id="drag-ghost" class="drag-ghost hidden"></div>
+
+  <!-- Promotion Picker Modal -->
+  <div class="modal-backdrop hidden" id="promo-modal">
+    <div class="modal promo-box">
+      <h3>Choose Promotion Piece</h3>
+      <div class="promo-choices" id="promo-choices"></div>
+      <div class="modal-hint">Click a piece or press Q / R / B / N (Esc to cancel)</div>
+    </div>
+  </div>
+
+  <!-- Load FEN Modal -->
+  <div class="modal-backdrop hidden" id="fen-modal">
+    <div class="modal fen-box">
+      <h3>Position FEN</h3>
+      <label class="field-label">Current / Custom FEN:</label>
+      <input type="text" id="fen-input" class="text-field" spellcheck="false">
+      <div class="modal-actions">
+        <button id="btn-fen-copy" class="btn">Copy FEN</button>
+        <button id="btn-fen-load" class="btn btn-primary">Load Position</button>
+        <button id="btn-fen-close" class="btn">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Import / Export PGN Modal -->
+  <div class="modal-backdrop hidden" id="pgn-modal">
+    <div class="modal pgn-box">
+      <h3>Import / Export PGN</h3>
+      <label class="field-label">Paste any PGN below to load directly into Analysis Mode, or copy the current game's PGN:</label>
+      <textarea id="pgn-textarea" class="text-field pgn-textarea" rows="10" spellcheck="false" placeholder="1. e4 e5 2. Nf3 Nc6 3. Bb5 ..."></textarea>
+      <div class="modal-actions">
+        <button id="btn-pgn-current" class="btn">Fill Current Game</button>
+        <button id="btn-pgn-copy" class="btn">Copy PGN</button>
+        <button id="btn-pgn-load" class="btn btn-primary">Import into Analysis</button>
+        <button id="btn-pgn-close" class="btn">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Post-Game Review Modal -->
+  <div class="modal-backdrop hidden" id="review-modal">
+    <div class="modal review-box">
+      <div class="review-header">
+        <div>
+          <h2>Post-Game Review</h2>
+          <p class="review-sub" id="review-sub">Analyzing game with C engine...</p>
+        </div>
+        <div class="review-header-actions">
+          <button id="btn-review-pgn" class="btn">Copy PGN</button>
+          <button id="btn-review-close" class="btn btn-primary">Close</button>
+        </div>
+      </div>
+      <div id="review-body"></div>
+    </div>
+  </div>
+
+  <!-- Live Elo Gauntlet Studio Modal -->
+  <div class="modal-backdrop hidden" id="gauntlet-modal">
+    <div class="modal gauntlet-box">
+      <div class="review-header">
+        <div>
+          <h2>&#127942; Live Elo Calibration Gauntlet</h2>
+          <p class="review-sub" id="gauntlet-sub">Multithreaded benchmark • Saves automatically to elo_ratings.json</p>
+        </div>
+        <div class="review-header-actions">
+          <button id="btn-gauntlet-start" class="btn btn-primary">&#9654; Start Gauntlet</button>
+          <button id="btn-gauntlet-stop" class="btn hidden">&#9209; Stop</button>
+          <button id="btn-gauntlet-close" class="btn">Close</button>
+        </div>
+      </div>
+
+      <div class="gauntlet-controls">
+        <label>Games / level:
+          <select id="gt-games">
+            <option value="2">2 (Quick)</option>
+            <option value="4">4</option>
+            <option value="6" selected>6 (Standard)</option>
+            <option value="10">10</option>
+            <option value="20">20 (Precise)</option>
+          </select>
+        </label>
+        <label>Threads:
+          <select id="gt-threads"></select>
+        </label>
+        <label>Scope:
+          <select id="gt-scope">
+            <option value="0" selected>All Levels (1–6)</option>
+            <option value="1">Level 1 — Novice</option>
+            <option value="2">Level 2 — Casual</option>
+            <option value="3">Level 3 — Club</option>
+            <option value="4">Level 4 — Strong</option>
+            <option value="5">Level 5 — Master</option>
+            <option value="6">Level 6 — Grandmaster</option>
+          </select>
+        </label>
+        <label>Opponent:
+          <select id="gt-opponent">
+            <option value="sf">Stockfish (FIDE Elo)</option>
+            <option value="internal">Internal Ladder</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="gauntlet-progress-wrap">
+        <div class="gauntlet-progress-bar">
+          <div class="gauntlet-progress-fill" id="gt-progress-fill"></div>
+        </div>
+        <span class="gauntlet-progress-text" id="gt-progress-text">Ready</span>
+      </div>
+
+      <div id="gauntlet-body" class="gauntlet-body">
+        <table class="review-table">
+          <thead>
+            <tr><th>Level</th><th>Opponent</th><th>Status</th><th>W-D-L</th><th>Score</th><th>Saved / Live Elo</th></tr>
+          </thead>
+          <tbody id="gt-table-body"></tbody>
+        </table>
+
+        <div id="gt-workers-section" class="hidden">
+          <h4 class="gt-section-title">Live Parallel Games (click any board to inspect in Analysis)</h4>
+          <div id="gt-workers-grid" class="workers-grid"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Puzzle Browser Modal -->
+  <div class="modal-backdrop hidden" id="puzzle-modal">
+    <div class="modal puzzle-modal-box">
+      <div class="review-header">
+        <div>
+          <h2>&#129513; Curated Tactical Puzzles</h2>
+          <p class="review-sub" id="pz-modal-sub">28 classic checkmates, sacrifices, forks &amp; endgame studies</p>
+        </div>
+        <div class="review-header-actions">
+          <button id="btn-pz-modal-close" class="btn btn-primary">Close</button>
+        </div>
+      </div>
+      <div class="theme-chips" id="pz-modal-filters">
+        <button type="button" class="chip active" data-theme="all">All (28)</button>
+        <button type="button" class="chip" data-theme="mate">Mates</button>
+        <button type="button" class="chip" data-theme="tactic">Tactics</button>
+        <button type="button" class="chip" data-theme="sacrifice">Sacrifices</button>
+        <button type="button" class="chip" data-theme="endgame">Endgames</button>
+        <button type="button" class="chip" data-theme="master">Master</button>
+      </div>
+      <div id="pz-modal-grid" class="pz-browser-grid"></div>
+    </div>
+  </div>
+
+  <!-- Game History Modal -->
+  <div class="modal-backdrop hidden" id="history-modal">
+    <div class="modal history-modal-box">
+      <div class="review-header">
+        <div>
+          <h2>&#128220; Saved Game History</h2>
+          <p class="review-sub" id="hist-modal-sub">Automatically saved games with detected openings &amp; reviewed Game Elo</p>
+        </div>
+        <div class="review-header-actions">
+          <input type="text" id="hist-search" class="text-field hist-search" placeholder="Search player, opening, result...">
+          <button id="btn-hist-clear" class="btn btn-danger-ghost">Clear All</button>
+          <button id="btn-hist-close" class="btn btn-primary">Close</button>
+        </div>
+      </div>
+      <div id="hist-summary-strip" class="hist-summary-strip"></div>
+      <div id="hist-table-wrap" class="hist-table-wrap"></div>
+    </div>
+  </div>
+
+  <!-- Zero-C AlphaZero Self-Play Training Lab Modal -->
+  <div class="modal-backdrop hidden" id="az-modal">
+    <div class="modal az-modal-box">
+      <div class="review-header">
+        <div>
+          <h2>&#129504; Zero-C &mdash; AlphaZero Self-Play Studio</h2>
+          <p class="review-sub" id="az-sub">Pure rules-only tabula rasa MCTS + SE-ResNet (KataGo Playout Caps, WDL + Moves-Left, FP16 Tensor Cores)</p>
+        </div>
+        <div class="review-header-actions">
+          <span class="az-phase-badge" id="az-phase-badge">IDLE</span>
+          <button id="btn-az-start" class="btn btn-primary">&#9654; Start Training</button>
+          <button id="btn-az-stop" class="btn btn-danger hidden">&#9632; Stop Training</button>
+          <button id="btn-az-reset" class="btn btn-danger-ghost" title="Reset checkpoints &amp; start fresh from Gen 0">Reset Run</button>
+          <button id="btn-az-close" class="btn">Close</button>
+        </div>
+      </div>
+
+      <div class="gauntlet-controls az-controls">
+        <label>Network:
+          <select id="az-arch">
+            <option value="tiny">Tiny 4&times;64 (~380k)</option>
+            <option value="standard" selected>Standard 6&times;96 (~1.45M)</option>
+            <option value="strong">Strong 8&times;128 (~2.5M)</option>
+          </select>
+        </label>
+        <label>Parallel Games:
+          <select id="az-games">
+            <option value="64">64</option>
+            <option value="128">128 (Balanced)</option>
+            <option value="256" selected>256 (Turbo GPU)</option>
+            <option value="512">512 (Max GPU)</option>
+          </select>
+        </label>
+        <label>Playout Cap (Fast/Full):
+          <select id="az-playouts">
+            <option value="24,120">Fast (24 / 120)</option>
+            <option value="36,200" selected>Balanced (36 / 200)</option>
+            <option value="48,300">Deep (48 / 300)</option>
+          </select>
+        </label>
+        <label>Games / Gen:
+          <select id="az-gpg">
+            <option value="64">64 (Quick Gen)</option>
+            <option value="128" selected>128 (Standard)</option>
+            <option value="256">256 (Smooth)</option>
+            <option value="512">512 (Turbo Batch)</option>
+          </select>
+        </label>
+        <span class="az-hw-chip" id="az-hw-chip">GPU: Ready</span>
+      </div>
+
+      <div class="gauntlet-progress-wrap">
+        <div class="gauntlet-progress-bar">
+          <div class="gauntlet-progress-fill az-progress-fill" id="az-progress-fill"></div>
+        </div>
+        <span class="gauntlet-progress-text" id="az-progress-text">Ready — click Start Training</span>
+      </div>
+
+      <div class="az-body">
+        <div class="az-metrics-grid">
+          <div class="az-metric"><span class="az-m-lbl">Generation</span><strong id="az-m-gen">Gen 0</strong><small id="az-m-arch">6&times;96 SE-ResNet</small></div>
+          <div class="az-metric"><span class="az-m-lbl">Self-Play Games</span><strong id="az-m-games">0</strong><small id="az-m-gph">0 games/hr</small></div>
+          <div class="az-metric"><span class="az-m-lbl">Positions Learned</span><strong id="az-m-pos">0</strong><small id="az-m-replay">Replay: 0</small></div>
+          <div class="az-metric"><span class="az-m-lbl">GPU Throughput</span><strong id="az-m-eps">0 /s</strong><small id="az-m-vram">FP16 &bull; 0 MB</small></div>
+          <div class="az-metric"><span class="az-m-lbl">Policy Top-1 Acc</span><strong id="az-m-acc">&mdash;</strong><small id="az-m-loss">Loss: &mdash;</small></div>
+          <div class="az-metric"><span class="az-m-lbl">W / D / L Split</span><strong id="az-m-wdl">0 / 0 / 0</strong><small id="az-m-dec">Decisive: &mdash;</small></div>
+        </div>
+
+        <div class="az-charts-row">
+          <div class="az-chart-card">
+            <div class="az-chart-head"><strong>Training Loss Curves</strong><span class="az-legend"><i class="lg-tot"></i>Total <i class="lg-pol"></i>Policy <i class="lg-wdl"></i>WDL</span></div>
+            <div id="az-loss-chart" class="az-chart-box"><div class="empty-hint">Loss curves appear after Gen 1 completes.</div></div>
+          </div>
+          <div class="az-chart-card">
+            <div class="az-chart-head"><strong>Learning Signal (%)</strong><span class="az-legend"><i class="lg-acc"></i>Policy Acc <i class="lg-dec"></i>Decisive %</span></div>
+            <div id="az-acc-chart" class="az-chart-box"><div class="empty-hint">Accuracy &amp; decisive curves appear after Gen 1 completes.</div></div>
+          </div>
+        </div>
+
+        <div id="az-live-section">
+          <h4 class="gt-section-title">Live Concurrent Self-Play Games (click any board to inspect in Analysis)</h4>
+          <div id="az-live-grid" class="workers-grid">
+            <div class="empty-hint">Start training to watch live concurrent self-play games, WDL bars &amp; MCTS visit candidates stream in real time.</div>
+          </div>
+        </div>
+
+        <div id="az-ckpts-section">
+          <h4 class="gt-section-title">Saved Checkpoint League</h4>
+          <table class="review-table">
+            <thead>
+              <tr><th>Generation</th><th>Games</th><th>Positions</th><th>Total Loss</th><th>Policy Acc</th><th>Saved</th><th>Action</th></tr>
+            </thead>
+            <tbody id="az-ckpt-tbody">
+              <tr><td colspan="7" class="empty-hint">No checkpoints saved yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
