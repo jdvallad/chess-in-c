@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Chess-in-C :: Dark Studio</title>
+  <title>&#9822; Chess-in-C :: Dark Studio</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -37,8 +38,9 @@
         <button id="btn-analysis-toggle" class="btn btn-accent" title="Enter/Exit Analysis Mode (analyze)">&#128269; Analysis</button>
       </div>
       <button id="btn-puzzles" class="btn btn-purple" title="Tactical Puzzle Studio">&#129513; Puzzles</button>
+      <button id="btn-fighters" class="btn btn-gold" title="Hall of Champions — Bot Profiles, Avatars &amp; Stories">&#128737; Fighters</button>
       <button id="btn-history" class="btn" title="Saved Game History">&#128220; History</button>
-      <button id="btn-az-lab" class="btn btn-magenta" title="Zero-C AlphaZero Self-Play Lab">&#129504; Zero-C</button>
+      <button id="btn-az-lab" class="btn btn-road" title="Road to 3K — Unified Step-by-Step Campaign to Build a 3000+ Elo Bot">&#128640; Road to 3K</button>
       <button id="btn-gauntlet" class="btn" title="Live Multithreaded Elo Gauntlet (gauntlet)">&#127942; Elo</button>
       <button id="btn-import-pgn" class="btn" title="Import PGN into Analysis (import)">&#8681; PGN</button>
       <select id="theme-select" class="theme-select" title="Board Theme">
@@ -240,25 +242,48 @@
         </div>
       </div>
 
-      <!-- Card 7: Zero-C AlphaZero Self-Play Lab (Full-Width Showcase Card) -->
-      <div class="menu-card card-magenta card-wide">
+      <!-- Card 7: Unified Road to 3K Campaign Hub (Full-Width Flagship Card) -->
+      <div class="menu-card card-road card-wide">
         <div class="mc-head">
-          <span class="mc-icon">&#129504;</span>
+          <span class="mc-icon">&#128640;</span>
           <div style="flex:1">
-            <h2>Zero-C &mdash; AlphaZero Self-Play Lab</h2>
-            <p>Pure tabula rasa SE-ResNet + C Batched MCTS (Playout Cap Randomization, WDL + Moves-Left, Forced Playouts). Knows <em>only</em> the rules of chess.</p>
+            <h2>Road to 3K &mdash; Build Your Own 3,000+ Elo Chess Bot</h2>
+            <p>Unified step-by-step campaign from scratch: download 5-piece Syzygy, train <strong>Zero-C v2</strong> (or try the <strong>15-min Toy Net</strong>), distill <strong>Singularity v5</strong>, and forge the 1024-wide <strong>Apex-C 3000</strong> &mdash; unlocking new Arena Challengers at every chapter!</p>
           </div>
-          <span class="az-home-pill" id="home-az-pill">Idle &bull; Gen 0</span>
+          <span class="az-home-pill" id="home-az-pill">Campaign &bull; 0%</span>
+        </div>
+        <div class="r3k-home-bar-wrap">
+          <div class="r3k-master-bar"><div class="r3k-master-fill" id="home-r3k-fill" style="width:0%"></div></div>
+          <span class="r3k-master-pct" id="home-r3k-pct">0%</span>
         </div>
         <div class="az-home-stats" id="home-az-stats">
-          <span>Gen: <strong id="home-az-gen">0</strong></span>
-          <span>Self-Play Games: <strong id="home-az-games">0</strong></span>
-          <span>Positions: <strong id="home-az-pos">0</strong></span>
-          <span>Compute: <strong id="home-az-dev">Checking...</strong></span>
+          <span>Zero-C: <strong id="home-az-gen">Gen 0</strong> (<strong id="home-az-games">0</strong>g)</span>
+          <span>Syzygy: <strong id="home-p3k-syz">0 / 290</strong></span>
+          <span>Datagen: <strong id="home-p3k-dg">0 pos</strong></span>
+          <span>Big NNUE v4: <strong id="home-p3k-nnue">Pending</strong></span>
+          <span>Challengers: <strong id="home-r3k-unlocked">&mdash;</strong></span>
+          <span class="hidden"><strong id="home-az-pos">0</strong><strong id="home-az-dev">GPU</strong><strong id="home-p3k-pill">Ready</strong></span>
         </div>
         <div class="mc-actions">
-          <button id="btn-home-az-lab" class="btn btn-magenta btn-lg">Open Training Lab &rarr;</button>
-          <button id="btn-home-play-az" class="btn btn-lg">&#9876; Play vs Zero-C</button>
+          <button id="btn-home-az-lab" class="btn btn-road btn-lg">&#128640; Continue Road to 3K &rarr;</button>
+          <button id="btn-home-p3k" class="btn btn-orange btn-lg">&#128293; 3000 Forge</button>
+          <button id="btn-home-toy" class="btn btn-magenta btn-lg">&#9889; 15-Min Toy Net</button>
+          <button id="btn-home-play-az" class="btn btn-lg">&#9876; Play Zero-C</button>
+        </div>
+      </div>
+
+      <!-- Card 8: Hall of Champions / Fighters -->
+      <div class="menu-card card-gold card-wide">
+        <div class="mc-head">
+          <span class="mc-icon">&#128737;</span>
+          <div style="flex:1">
+            <h2>Hall of Champions &mdash; Challenger Roster &amp; Lore</h2>
+            <p>Meet all 19 fighters across 5 factions, inspect custom avatars, read their stories, and challenge unlocked bosses.</p>
+          </div>
+          <button id="btn-home-fighters" class="btn btn-gold">Open Hall of Champions &rarr;</button>
+        </div>
+        <div class="mc-body">
+          <div id="home-fighters-preview" class="home-fighters-preview"></div>
         </div>
       </div>
     </div>
@@ -269,6 +294,7 @@
     <section class="stage">
       <div class="player-strip" id="top-strip">
         <div class="player-info">
+          <span class="player-avatar" id="top-avatar" title="Click to inspect fighter dossier"></span>
           <span class="player-dot" id="top-dot"></span>
           <span class="player-name" id="top-name">Titan-C</span>
           <span class="captured-row" id="top-captured"></span>
@@ -295,6 +321,7 @@
 
       <div class="player-strip" id="bottom-strip">
         <div class="player-info">
+          <span class="player-avatar" id="bottom-avatar" title="Click to inspect fighter dossier"></span>
           <span class="player-dot" id="bottom-dot"></span>
           <span class="player-name" id="bottom-name">Human</span>
           <span class="captured-row" id="bottom-captured"></span>
@@ -547,6 +574,10 @@
             <option value="5">Titan-C L5 — Master</option>
             <option value="6">Titan-C L6 — Grandmaster</option>
             <option value="7">Zero-C (AlphaZero)</option>
+            <option value="14" disabled>&#128274; Gemini Arbiter (Dual-Brain &bull; Unlocks after Zero-C v2)</option>
+            <option value="15" disabled>&#128274; Oracle of LMR (Neural Alpha-Beta &bull; Unlocks after Zero-C v2)</option>
+            <option value="16" disabled>&#128274; Zero-C Omega (Hybrid MCTS &bull; Unlocks after Zero-C v2)</option>
+            <option value="17" disabled>&#128274; Singularity v5 (Distilled NNUE &bull; Unlocks after Zero-C v2)</option>
           </select>
         </label>
         <label>Opponent:
@@ -570,6 +601,10 @@
             <option value="5">Titan-C L5 — Master</option>
             <option value="6">Titan-C L6 — Grandmaster</option>
             <option value="0">Titan-C Custom Elo</option>
+            <option value="14" disabled>&#128274; Gemini Arbiter (Locked &bull; Unlocks after Zero-C v2)</option>
+            <option value="15" disabled>&#128274; Oracle of LMR (Locked &bull; Unlocks after Zero-C v2)</option>
+            <option value="16" disabled>&#128274; Zero-C Omega (Locked &bull; Unlocks after Zero-C v2)</option>
+            <option value="17" disabled>&#128274; Singularity v5 (Locked &bull; Unlocks after Zero-C v2)</option>
           </select>
         </label>
         <label id="calc-custom-wrap" class="hidden">Custom Elo:
@@ -710,24 +745,64 @@
     </div>
   </div>
 
-  <!-- Zero-C AlphaZero Self-Play Training Lab Modal -->
+  <!-- Unified Road to 3K Command Center Modal (Campaign Map + Zero-C v2 Lab + 3000 Forge + Toy Net) -->
   <div class="modal-backdrop hidden" id="az-modal">
     <div class="modal az-modal-box">
       <div class="review-header">
         <div>
-          <h2>&#129504; Zero-C v2 &mdash; AlphaZero Self-Play Mission Control</h2>
-          <p class="review-sub" id="az-sub">Pure rules-only tabula rasa MCTS + SE-ResNet (20-Plane Rep/STM, Exact Solver, Subtree Reuse, Q-Blended WDL, 1.2M Replay)</p>
+          <h2>&#128640; Road to 3K &mdash; Grandmaster Bot Command Center</h2>
+          <p class="review-sub" id="az-sub">Step-by-step unified workshop to build a 3,000+ Elo chess engine from scratch &amp; unlock every Arena Challenger.</p>
         </div>
         <div class="review-header-actions">
           <span class="az-phase-badge" id="az-phase-badge">IDLE</span>
           <button id="btn-az-spectate" class="btn btn-sm btn-accent" title="Watch live self-play games on the full board with auto-advance and training HUD">&#128065; Spectate Training</button>
           <button id="btn-az-vs-v1" class="btn btn-sm btn-magenta" title="Watch live Zero-C v2 play head-to-head against immortalized Zero-C v1 Champion (Gen 4320)">&#9876; Watch v2 vs v1</button>
-          <button id="btn-az-start" class="btn btn-primary">&#9654; Start Training</button>
-          <button id="btn-az-stop" class="btn btn-danger hidden">&#9632; Stop Training</button>
-          <button id="btn-az-close" class="btn">Close</button>
+          <button id="btn-az-close" class="btn btn-primary">Close</button>
         </div>
       </div>
 
+      <!-- Master Campaign Progress Bar + Unified Workspace Tabs -->
+      <div class="r3k-master-strip">
+        <div class="r3k-master-top">
+          <div class="r3k-master-lbl">
+            <strong>&#127942; Overall Road to 3K Progress</strong>
+            <span id="r3k-master-sub">Evaluating live progress across all 5 campaign chapters...</span>
+          </div>
+          <span class="r3k-unlocked-chip" id="r3k-master-unlocked">Challengers: &mdash;</span>
+        </div>
+        <div class="r3k-home-bar-wrap">
+          <div class="r3k-master-bar"><div class="r3k-master-fill" id="r3k-master-fill" style="width:0%"></div></div>
+          <span class="r3k-master-pct" id="r3k-master-pct">0%</span>
+        </div>
+      </div>
+
+      <div class="r3k-tabs" id="r3k-tabs">
+        <button type="button" class="r3k-tab active" data-r3k-tab="map">&#128506; Campaign Map</button>
+        <button type="button" class="r3k-tab" data-r3k-tab="zeroc">&#129504; Zero-C v2 Lab</button>
+        <button type="button" class="r3k-tab" data-r3k-tab="forge">&#128293; 3000 Forge (Syzygy &bull; Datagen &bull; 1024 NNUE)</button>
+        <button type="button" class="r3k-tab" data-r3k-tab="toy">&#9889; Quick Toy Net (15-Min Sprint)</button>
+      </div>
+
+      <!-- TAB 1: Gamified Step-by-Step Campaign Map -->
+      <div class="r3k-pane" id="r3k-pane-map">
+        <div class="r3k-chapters-grid" id="r3k-chapters-grid"></div>
+        <div class="r3k-trophy-panel">
+          <div class="r3k-trophy-head">
+            <strong>&#128737; Campaign Challengers &amp; Unlockable Bosses</strong>
+            <span>Click any unlocked avatar to challenge them immediately &mdash; locked bosses show which chapter breaks their seal!</span>
+          </div>
+          <div class="r3k-trophy-strip" id="r3k-trophy-strip"></div>
+        </div>
+      </div>
+
+      <!-- TAB 2: Full Zero-C v2 Mission Control (All Existing Visuals Preserved!) -->
+      <div class="r3k-pane hidden" id="r3k-pane-zeroc">
+      <div class="r3k-zeroc-toolbar">
+        <button id="btn-az-throttle" class="btn btn-purple" title="Launch Overnight Full Throttle: 1024 parallel games, 10T C MCTS, Ultra 48/400 playout caps, 256 games/gen, 2.0M replay buffer, FP16 batch 768">&#128293; Full Throttle Overnight</button>
+        <button id="btn-az-start" class="btn btn-primary">&#9654; Start Zero-C v2</button>
+        <button id="btn-az-stop" class="btn btn-danger hidden">&#9632; Stop Zero-C v2</button>
+        <span class="az-hw-chip" id="az-hw-chip" style="margin-left:auto;">GPU: Ready</span>
+      </div>
       <div class="gauntlet-controls az-controls">
         <label>Network:
           <select id="az-arch">
@@ -742,16 +817,19 @@
           <select id="az-games">
             <option value="64">64</option>
             <option value="128">128 (Balanced)</option>
-            <option value="256" selected>256 (Turbo GPU)</option>
-            <option value="512">512 (Max GPU)</option>
+            <option value="256">256 (Turbo GPU)</option>
+            <option value="512" selected>512 (Max GPU)</option>
+            <option value="768">768 (Heavy GPU+CPU)</option>
+            <option value="1024">1024 (Full Throttle)</option>
           </select>
         </label>
         <label>Playout Cap (Fast/Full):
           <select id="az-playouts">
             <option value="24,120">Fast (24 / 120)</option>
             <option value="36,200">Balanced (36 / 200)</option>
-            <option value="48,300" selected>Deep (48 / 300 &bull; v2 Recommended)</option>
-            <option value="48,400">Ultra (48 / 400)</option>
+            <option value="48,300">Deep (48 / 300)</option>
+            <option value="48,400" selected>Ultra (48 / 400 &bull; Overnight)</option>
+            <option value="64,450">Grandmaster (64 / 450)</option>
           </select>
         </label>
         <label>Games / Gen:
@@ -762,7 +840,6 @@
             <option value="512">512 (Turbo Batch)</option>
           </select>
         </label>
-        <span class="az-hw-chip" id="az-hw-chip">GPU: Ready</span>
       </div>
 
       <div class="az-session-strip hidden" id="az-session-strip">
@@ -778,6 +855,71 @@
       </div>
 
       <div class="az-body">
+        <!-- Training Completion Indicator + 4-Gate Convergence Tracker -->
+        <div class="az-completion-panel" id="az-completion-panel">
+          <div class="az-comp-top">
+            <div class="az-comp-title-grp">
+              <span class="az-comp-badge" id="az-comp-badge">&#9203; TRAINING IN PROGRESS</span>
+              <span class="az-comp-pct" id="az-comp-pct">0%</span>
+              <span class="az-comp-reason" id="az-comp-reason">Evaluating 4 convergence gates...</span>
+            </div>
+            <div class="az-comp-actions">
+              <button type="button" id="btn-az-logic-toggle" class="btn btn-sm">&#128216; Hide Completion Logic</button>
+              <button type="button" id="btn-az-unlock-now" class="btn btn-sm btn-gold hidden" title="Graduate Zero-C v2 early and unlock the 3 Runtime Hybrids + Singularity v5 Distillation Forge">&#128275; Graduate v2 Early</button>
+              <button type="button" id="btn-az-open-hybrids" class="btn btn-sm btn-gold hidden">&#128737; Meet Hybrids</button>
+            </div>
+          </div>
+          <div class="az-comp-bar-wrap">
+            <div class="az-comp-bar"><div class="az-comp-bar-fill" id="az-comp-bar-fill" style="width:0%"></div></div>
+            <span class="az-comp-eta" id="az-comp-eta">ETA: &mdash;</span>
+          </div>
+          <div class="az-comp-gates" id="az-comp-gates">
+            <div class="az-gate-pill" id="az-gate-1"><b>1. Experience</b><span>0 / 500k games</span></div>
+            <div class="az-gate-pill" id="az-gate-2"><b>2. LR Anneal</b><span>&mdash;</span></div>
+            <div class="az-gate-pill" id="az-gate-3"><b>3. Policy Plateau</b><span>Need 200 gens</span></div>
+            <div class="az-gate-pill" id="az-gate-4"><b>4. Endgame Stability</b><span>Need 200 gens</span></div>
+          </div>
+
+          <!-- Stage 2: Singularity v5 Knowledge Distillation Forge -->
+          <div class="az-distill-strip" id="az-distill-strip">
+            <div class="az-distill-top">
+              <div class="az-distill-meta">
+                <strong>&#9889; Stage 2 Forge &mdash; Singularity v5 (Distilled NNUE)</strong>
+                <span id="az-distill-msg">Sealed until Zero-C v2 finishes: compresses the 3.56M ResNet into a brand-new 200ns AVX2 CPU network (<code>data/chess_net_zero_v4.nnue</code>).</span>
+              </div>
+              <div class="az-distill-actions">
+                <button type="button" id="btn-az-distill-start" class="btn btn-sm btn-cyan" disabled title="Compresses Zero-C v2 into data/chess_net_zero_v4.nnue (~2-4 min on RTX GPU)">&#9889; Distill Singularity v5</button>
+                <button type="button" id="btn-az-distill-stop" class="btn btn-sm btn-danger hidden">&#9632; Stop</button>
+              </div>
+            </div>
+            <div class="az-distill-bar hidden" id="az-distill-bar-wrap">
+              <div class="az-distill-fill" id="az-distill-fill" style="width:0%"></div>
+            </div>
+          </div>
+
+          <!-- Dedicated Explainer Card: How "Training Done" Is Determined -->
+          <div class="az-comp-logic-card" id="az-comp-logic-card">
+            <div class="az-logic-head">
+              <strong>&#129514; How Does Zero-C Know When Training Is Done?</strong>
+              <span>4-Gate AlphaZero Convergence + 2-Stage Hybrid Unlock</span>
+            </div>
+            <div class="az-logic-grid">
+              <div class="az-logic-item">
+                <h4>Why It Doesn&rsquo;t Wait for Loss &rarr; 0</h4>
+                <p>Pure self-play is a <strong>moving target</strong>: as both White and Black improve, positions stay fiercely balanced, so <strong>WDL Loss</strong> stabilizes around <code>0.48&ndash;0.65</code> even for master engines. Instead, completion tracks <strong>Policy Loss &amp; Top-1 Accuracy</strong> (whether the net is still learning new MCTS discoveries) alongside the <strong>Cosine LR schedule</strong>.</p>
+              </div>
+              <div class="az-logic-item">
+                <h4>Two Automatic Paths to COMPLETE</h4>
+                <p><strong>Path A (Full Fine-Tune):</strong> Reach <code>Gen 5,500</code> &amp; <code>&ge;500k</code> games so the stretched Cosine LR completes its full polish down to <code>0.00018</code>.<br><strong>Path B (Verified Plateau):</strong> All 4 gates turn green simultaneously &mdash; <code>&ge;500k</code> games, LR in final tail (<code>&le;0.00026</code>), Policy Loss drop <code>&lt;0.015</code> &amp; Top-1 Acc gain <code>&lt;+0.4%</code> over 150 gens, and Moves-Left drop <code>&lt;0.003</code> with <code>&ge;85</code> avg plies.</p>
+              </div>
+              <div class="az-logic-item">
+                <h4>Two-Stage Hybrid Unlock (Runtime vs. Distilled)</h4>
+                <p><strong>Stage 1 (Immediate):</strong> Stamps <code>v2_complete.flag</code> and unlocks the <strong>3 Runtime Hybrids</strong> (<em>Gemini Arbiter, Oracle of LMR, Zero-C Omega</em>), which fuse Titan-C + Zero-C v2 live.<br><strong>Stage 2 (Model Compression):</strong> <em>Singularity v5</em> stays sealed until you run <strong>&#9889; Distill Singularity v5</strong>, training a brand-new quantized AVX2 NNUE (<code>chess_net_zero_v4.nnue</code>) from Zero-C v2&rsquo;s teacher evaluations!</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- Tangible Chess Mastery Milestone Bar + Live Health Diagnosis -->
         <div class="az-milestone-panel">
           <div class="az-milestone-head">
@@ -951,6 +1093,220 @@
             </tbody>
           </table>
         </div>
+      </div>
+      </div> <!-- end #r3k-pane-zeroc -->
+
+      <!-- TAB 3: Project 3000 Forge (All 4 Cards + 1-Click In-UI Syzygy Downloader!) -->
+      <div class="r3k-pane hidden" id="r3k-pane-forge">
+        <div class="p3k-coexist-banner" id="p3k-coexist-banner">
+          <strong>Checking Zero-C &amp; hardware status...</strong>
+        </div>
+
+        <div class="p3k-grid">
+          <!-- Stage 1: Syzygy 5-Piece Tablebase Downloader & Live Tracker -->
+          <div class="p3k-card" id="p3k-card-syzygy">
+            <div class="p3k-card-head">
+              <div>
+                <h3>1. 5-Piece Syzygy Tablebases</h3>
+                <span class="p3k-tag">0% GPU &bull; ~939 MB One-Time Download</span>
+              </div>
+              <span class="p3k-status-pill" id="p3k-syz-pill">Checking...</span>
+            </div>
+            <p class="p3k-desc">Official 3-4-5 piece WDL + DTZ endgame tables (290 files) in <code>data/syzygy/</code>. Download directly in the UI to unlock <strong>Apex-C + Syzygy</strong> (while keeping <strong>Apex-C Pure</strong> 100% tablebase-free!).</p>
+            <div class="p3k-controls">
+              <button id="btn-p3k-syz-start" class="btn btn-sm btn-cyan">&#11015; Download 5-Man Syzygy</button>
+              <button id="btn-p3k-syz-stop" class="btn btn-sm btn-danger hidden">&#9632; Stop Download</button>
+            </div>
+            <div class="p3k-bar-wrap">
+              <div class="p3k-bar"><div class="p3k-bar-fill p3k-fill-cyan" id="p3k-syz-fill" style="width:0%"></div></div>
+              <span class="p3k-pct" id="p3k-syz-pct">0%</span>
+            </div>
+            <div class="p3k-stats-row">
+              <span>Files: <strong id="p3k-syz-files">0 / 290</strong></span>
+              <span>WDL / DTZ: <strong id="p3k-syz-split">0 / 0</strong></span>
+              <span>Size: <strong id="p3k-syz-mb">0 MB</strong></span>
+            </div>
+          </div>
+
+          <!-- Stage 2: CPU Self-Play Datagen -->
+          <div class="p3k-card" id="p3k-card-datagen">
+            <div class="p3k-card-head">
+              <div>
+                <h3>2. Self-Play Datagen (CPU)</h3>
+                <span class="p3k-tag">0% GPU &bull; Safe w/ Zero-C at 2T</span>
+              </div>
+              <span class="p3k-status-pill" id="p3k-dg-pill">Idle</span>
+            </div>
+            <p class="p3k-desc">Runs our upgraded C11 engine at 5,000 nodes/move (at low CPU priority <code>nice 15</code>) to collect millions of sharp quiet positions into <code>data/datagen_v4.bin</code> for training the giant 1024-wide NNUE.</p>
+            <div class="p3k-controls">
+              <label>Threads:
+                <select id="p3k-dg-threads">
+                  <option value="2" selected>2T (Safe w/ Zero-C)</option>
+                  <option value="4">4T (Moderate)</option>
+                  <option value="8">8T (Fast Solo)</option>
+                  <option value="10">10T (Max Solo)</option>
+                </select>
+              </label>
+              <label>Add Positions:
+                <select id="p3k-dg-millions">
+                  <option value="5">5M (~2h @ 2T)</option>
+                  <option value="15">15M (~6h @ 2T)</option>
+                  <option value="25" selected>25M (Overnight @ 2T)</option>
+                  <option value="50">50M (Project 3000 Full)</option>
+                </select>
+              </label>
+              <button id="btn-p3k-dg-start" class="btn btn-sm btn-primary">&#9654; Start Datagen</button>
+              <button id="btn-p3k-dg-stop" class="btn btn-sm btn-danger hidden">&#9632; Stop</button>
+            </div>
+            <div class="p3k-bar-wrap">
+              <div class="p3k-bar"><div class="p3k-bar-fill p3k-fill-orange" id="p3k-dg-fill" style="width:0%"></div></div>
+              <span class="p3k-pct" id="p3k-dg-pct">0%</span>
+            </div>
+            <div class="p3k-stats-row">
+              <span>File Total: <strong id="p3k-dg-total">0 pos</strong></span>
+              <span>Speed: <strong id="p3k-dg-pps">&mdash;</strong></span>
+              <span>Games: <strong id="p3k-dg-games">0</strong></span>
+              <span>ETA: <strong id="p3k-dg-eta">&mdash;</strong></span>
+            </div>
+          </div>
+
+          <!-- Stage 3: Parallel SPSA Search Tuner -->
+          <div class="p3k-card" id="p3k-card-spsa">
+            <div class="p3k-card-head">
+              <div>
+                <h3>3. SPSA Search Tuner (CPU)</h3>
+                <span class="p3k-tag">0% GPU &bull; Safe w/ Zero-C at 2T</span>
+              </div>
+              <span class="p3k-status-pill" id="p3k-spsa-pill">Idle</span>
+            </div>
+            <p class="p3k-desc">Automatically optimizes 14 search pruning, LMR &amp; Correction History constants via parallel self-play matches (<code>data/spsa_best.json</code>). Run either Datagen OR SPSA at 2T while Zero-C trains!</p>
+            <div class="p3k-controls">
+              <label>Threads:
+                <select id="p3k-spsa-threads">
+                  <option value="2" selected>2T (Safe w/ Zero-C)</option>
+                  <option value="4">4T (Moderate)</option>
+                  <option value="8">8T (Fast Solo)</option>
+                </select>
+              </label>
+              <label>Iterations:
+                <select id="p3k-spsa-iters">
+                  <option value="50">50 (Quick)</option>
+                  <option value="150" selected>150 (Standard)</option>
+                  <option value="300">300 (Deep)</option>
+                </select>
+              </label>
+              <button id="btn-p3k-spsa-start" class="btn btn-sm btn-accent">&#9654; Start SPSA</button>
+              <button id="btn-p3k-spsa-stop" class="btn btn-sm btn-danger hidden">&#9632; Stop</button>
+            </div>
+            <div class="p3k-bar-wrap">
+              <div class="p3k-bar"><div class="p3k-bar-fill p3k-fill-purple" id="p3k-spsa-fill" style="width:0%"></div></div>
+              <span class="p3k-pct" id="p3k-spsa-pct">0%</span>
+            </div>
+            <div class="p3k-stats-row">
+              <span>Iteration: <strong id="p3k-spsa-iter">0 / 150</strong></span>
+              <span>Last Match: <strong id="p3k-spsa-score">&mdash;</strong></span>
+              <span>Tuned: <strong id="p3k-spsa-params">Default</strong></span>
+            </div>
+          </div>
+
+          <!-- Stage 4: Big 16x768->1024 NNUE v4 GPU Trainer -->
+          <div class="p3k-card" id="p3k-card-nnue">
+            <div class="p3k-card-head">
+              <div>
+                <h3>4. Big NNUE v4 GPU Trainer (16&times;768 &rarr; 1024)</h3>
+                <span class="p3k-tag">RTX GPU (~20 min) &bull; Pause Zero-C First</span>
+              </div>
+              <span class="p3k-status-pill" id="p3k-nnue-pill">Waiting for Data</span>
+            </div>
+            <p class="p3k-desc">Once Stage 2 has collected 10M&ndash;50M+ positions, pause Zero-C for ~20 minutes and click Train to forge <code>data/titan_v6_1024.nnue</code>. Both <strong>Apex-C Pure</strong> and <strong>Apex-C + Syzygy</strong> load it automatically!</p>
+            <div class="p3k-controls">
+              <label>Epochs:
+                <select id="p3k-nnue-epochs">
+                  <option value="16">16 (~14 min)</option>
+                  <option value="24" selected>24 (~20 min)</option>
+                  <option value="32">32 (~28 min)</option>
+                </select>
+              </label>
+              <button id="btn-p3k-nnue-start" class="btn btn-sm btn-gold">&#9889; Train 1024 NNUE v4</button>
+              <button id="btn-p3k-nnue-stop" class="btn btn-sm btn-danger hidden">&#9632; Stop</button>
+            </div>
+            <div class="p3k-bar-wrap">
+              <div class="p3k-bar"><div class="p3k-bar-fill p3k-fill-gold" id="p3k-nnue-fill" style="width:0%"></div></div>
+              <span class="p3k-pct" id="p3k-nnue-pct">0%</span>
+            </div>
+            <div class="p3k-stats-row">
+              <span>Status: <strong id="p3k-nnue-msg">Collect positions in Stage 2 first</strong></span>
+              <span>Best Val MSE: <strong id="p3k-nnue-val">&mdash;</strong></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 4: Quick Toy Net (15-Min AlphaZero Sandbox — Isolated in data/az_toy/) -->
+      <div class="r3k-pane hidden" id="r3k-pane-toy">
+        <div class="p3k-card r3k-toy-hero" id="r3k-toy-card">
+          <div class="p3k-card-head">
+            <div>
+              <h3>&#9889; Zero-C Lite &mdash; 15-Minute Toy AlphaZero Sandbox</h3>
+              <span class="p3k-tag">Isolated in <code>data/az_toy/</code> &bull; Never touches your main Zero-C v2 or 3K run!</span>
+            </div>
+            <span class="p3k-status-pill" id="toy-pill">Ready</span>
+          </div>
+          <p class="p3k-desc">Want to watch a neural network learn chess from scratch in a single coffee break instead of committing to the full multi-day 3,000-Elo campaign? Spin up a fast <strong>Tiny 4&times;64</strong> (~380k params) or <strong>Standard 6&times;96</strong> (~1.4M params) sandbox net here — it completes ~60 generations in 15 minutes!</p>
+          <div class="p3k-controls">
+            <label>Toy Model Size:
+              <select id="toy-arch">
+                <option value="tiny" selected>Tiny 4&times;64 (~380k &bull; Ultra Fast)</option>
+                <option value="standard">Standard 6&times;96 (~1.4M &bull; Classic v1)</option>
+              </select>
+            </label>
+            <button id="btn-toy-start" class="btn btn-sm btn-magenta">&#9654; Start Toy Sprint</button>
+            <button id="btn-toy-stop" class="btn btn-sm btn-danger hidden">&#9632; Stop Toy</button>
+            <button id="btn-toy-reset" class="btn btn-sm btn-danger-ghost" title="Reset only data/az_toy/ to Gen 0">&#8634; Fresh Gen 0</button>
+            <button id="btn-toy-play" class="btn btn-sm btn-primary hidden">&#9876; Play Toy Net</button>
+            <button id="btn-toy-play-v1" class="btn btn-sm btn-gold">&#127963; Play Chronos (Gen 4320 Archive)</button>
+          </div>
+          <div class="p3k-bar-wrap">
+            <div class="p3k-bar"><div class="p3k-bar-fill p3k-fill-purple" id="toy-fill" style="width:0%"></div></div>
+            <span class="p3k-pct" id="toy-pct">0%</span>
+          </div>
+          <div class="p3k-stats-row">
+            <span>Gen: <strong id="toy-gen">0</strong></span>
+            <span>Games: <strong id="toy-games">0</strong></span>
+            <span>Policy Acc: <strong id="toy-acc">&mdash;</strong></span>
+            <span>Loss: <strong id="toy-loss">&mdash;</strong></span>
+            <span>Status: <strong id="toy-msg">Ready for a quick 15-min sprint (pause Zero-C v2 first)</strong></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Hall of Champions / Fighters Modal -->
+  <div class="modal-backdrop hidden" id="fighters-modal">
+    <div class="modal fighters-modal-box">
+      <div class="review-header">
+        <div>
+          <h2>&#128737; Hall of Champions &mdash; Fighter Roster &amp; Lore</h2>
+          <p class="review-sub" id="fighters-sub">Every challenger in the Chess-in-C Arena: backstories, fighting styles, combat ratings &amp; sealed Mythic Hybrids.</p>
+        </div>
+        <div class="review-header-actions">
+          <button id="btn-fighters-close" class="btn btn-primary">Close</button>
+        </div>
+      </div>
+
+      <div class="theme-chips fighters-filters" id="fighters-filters">
+        <button type="button" class="chip active" data-faction="all">All Fighters (19)</button>
+        <button type="button" class="chip" data-faction="titan">&#9876; Titan-C Guild (6)</button>
+        <button type="button" class="chip" data-faction="apex">&#128293; Project 3000 Apex (2)</button>
+        <button type="button" class="chip" data-faction="zero">&#129504; Zero-C Neural (2)</button>
+        <button type="button" class="chip" data-faction="hybrid">&#128274; Mythic Hybrids (4)</button>
+        <button type="button" class="chip" data-faction="stockfish">&#128031; Stockfish Syndicate (5)</button>
+      </div>
+
+      <div class="fighters-layout">
+        <div class="fighters-grid" id="fighters-grid"></div>
+        <aside class="fighter-dossier" id="fighter-dossier"></aside>
       </div>
     </div>
   </div>

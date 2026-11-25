@@ -2,6 +2,7 @@
 
 Designed for maximum FP16 Tensor Core throughput on single-GPU setups (e.g. RTX 2060 SUPER).
 """
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -111,7 +112,10 @@ def save_checkpoint(path: str, model: ZeroCNet, optimizer=None, meta: dict = Non
     }
     if optimizer is not None:
         payload["optimizer"] = optimizer.state_dict()
-    torch.save(payload, path)
+    # Atomic write so live UCI inference processes NEVER read a half-written checkpoint!
+    tmp_path = path + ".tmp"
+    torch.save(payload, tmp_path)
+    os.replace(tmp_path, path)
 
 
 def load_checkpoint(path: str, device: torch.device):

@@ -11,27 +11,44 @@
 #include <immintrin.h>
 #endif
 
-// Quantized (4x768) -> 512x2 -> 8 King-Bucketed + Phase-Bucketed SCReLU NNUE v3
-// Total parameter footprint: ~3.16 MB (fits in L3 cache; 2-4 KB active rows per delta in L1!)
+// Dual-format Quantized King-Bucketed + Phase-Bucketed SCReLU NNUE:
+//   v3: (4x768)  ->  256x2 -> 8  (Titan-C v4 / Singularity v5, ~1.58 MB active)
+//   v4: (16x768) -> 1024x2 -> 8  (Project 3000 Apex-C Big NNUE, ~24 MB active)
+// Stored in BSS so untouched v4 pages cost 0 physical RAM until a v4 file is loaded!
 typedef struct nnue_network {
-    _Alignas(32) int16_t ft_weights[NNUE_INPUTS][NNUE_HIDDEN];
-    _Alignas(32) int16_t ft_bias[NNUE_HIDDEN];
-    _Alignas(32) int16_t out_weights[NNUE_BUCKETS][NNUE_HIDDEN * 2];
+    _Alignas(32) int16_t ft_weights[NNUE_MAX_INPUTS][NNUE_MAX_HIDDEN];
+    _Alignas(32) int16_t ft_bias[NNUE_MAX_HIDDEN];
+    _Alignas(32) int16_t out_weights[NNUE_BUCKETS][NNUE_MAX_HIDDEN * 2];
     int32_t out_bias[NNUE_BUCKETS];
 } nnue_network;
 
 static nnue_network g_net;
 static bool g_nnue_loaded = false;
 static uint32_t g_nnue_gen = 1u;
+static uint32_t g_nnue_ver = NNUE_VERSION;
+static int g_nnue_hidden = NNUE_HIDDEN;
+static int g_nnue_kb = NNUE_KING_BUCKETS;
 static nnue_mode g_nnue_mode = NNUE_PURE;
 
 typedef struct nnue_header {
     char magic[8]; // "CINCNNUE"
-    uint32_t version; // 3
-    uint32_t inputs; // 3072
-    uint32_t hidden; // 512
+    uint32_t version; // 3 or 4
+    uint32_t inputs; // 3072 (v3) or 12288 (v4)
+    uint32_t hidden; // 256 (v3) or 512/1024 (v4)
     uint32_t buckets; // 8
 } nnue_header;
+
+uint32_t nnue_get_loaded_version(void) {
+    return g_nnue_ver;
+}
+
+int nnue_get_loaded_hidden(void) {
+    return g_nnue_hidden;
+}
+
+int nnue_get_loaded_king_buckets(void) {
+    return g_nnue_kb;
+}
 
 bool nnue_load_file(const char *path) {
     if (!path || path[0] == '\0') {
@@ -43,17 +60,47 @@ bool nnue_load_file(const char *path) {
     }
     nnue_header hdr;
     if (fread(&hdr, sizeof(hdr), 1, fp) != 1 || memcmp(hdr.magic, "CINCNNUE", 8) != 0
-        || hdr.version != NNUE_VERSION || hdr.inputs != NNUE_INPUTS || hdr.hidden != NNUE_HIDDEN
         || hdr.buckets != NNUE_BUCKETS) {
         fclose(fp);
         return false;
     }
-    bool ok = (fread(g_net.ft_weights, sizeof(g_net.ft_weights), 1, fp) == 1)
-              && (fread(g_net.ft_bias, sizeof(g_net.ft_bias), 1, fp) == 1)
-              && (fread(g_net.out_weights, sizeof(g_net.out_weights), 1, fp) == 1)
-              && (fread(g_net.out_bias, sizeof(g_net.out_bias), 1, fp) == 1);
+
+    bool valid_v3 = (hdr.version == NNUE_VERSION && hdr.inputs == NNUE_INPUTS
+                     && hdr.hidden == NNUE_HIDDEN);
+    bool valid_v4 = (hdr.version == NNUE_VERSION_V4
+                     && (hdr.inputs == NNUE_INPUTS || hdr.inputs == NNUE_MAX_INPUTS)
+                     && hdr.hidden >= 64 && hdr.hidden <= NNUE_MAX_HIDDEN && (hdr.hidden % 16 == 0));
+    if (!valid_v3 && !valid_v4) {
+        fclose(fp);
+        return false;
+    }
+
+    size_t n_in = (size_t) hdr.inputs;
+    size_t n_hid = (size_t) hdr.hidden;
+    bool ok = true;
+
+    for (size_t i = 0; i < n_in && ok; i++) {
+        if (fread(g_net.ft_weights[i], sizeof(int16_t), n_hid, fp) != n_hid) {
+            ok = false;
+        }
+    }
+    if (ok && fread(g_net.ft_bias, sizeof(int16_t), n_hid, fp) != n_hid) {
+        ok = false;
+    }
+    for (size_t b = 0; b < NNUE_BUCKETS && ok; b++) {
+        if (fread(g_net.out_weights[b], sizeof(int16_t), n_hid * 2, fp) != n_hid * 2) {
+            ok = false;
+        }
+    }
+    if (ok && fread(g_net.out_bias, sizeof(int32_t), NNUE_BUCKETS, fp) != NNUE_BUCKETS) {
+        ok = false;
+    }
     fclose(fp);
+
     if (ok) {
+        g_nnue_ver = hdr.version;
+        g_nnue_hidden = (int) hdr.hidden;
+        g_nnue_kb = (int) (hdr.inputs / NNUE_BASE_INPUTS);
         g_nnue_loaded = true;
         g_nnue_gen++;
     }
@@ -85,38 +132,38 @@ nnue_mode nnue_get_mode(void) {
 // SIMD Vector Helpers (AVX2 fast path + portable scalar fallback)
 // =========================================================================
 
-static inline void vec_add(int16_t *restrict dst, const int16_t *restrict row) {
+static inline void vec_add(int16_t *restrict dst, const int16_t *restrict row, int n) {
 #if defined(__AVX2__)
-    for (int i = 0; i < NNUE_HIDDEN; i += 16) {
+    for (int i = 0; i < n; i += 16) {
         __m256i a = _mm256_loadu_si256((const __m256i *) (dst + i));
         __m256i w = _mm256_loadu_si256((const __m256i *) (row + i));
         _mm256_storeu_si256((__m256i *) (dst + i), _mm256_add_epi16(a, w));
     }
 #else
-    for (int i = 0; i < NNUE_HIDDEN; i++) {
+    for (int i = 0; i < n; i++) {
         dst[i] = (int16_t) (dst[i] + row[i]);
     }
 #endif
 }
 
-static inline void vec_sub(int16_t *restrict dst, const int16_t *restrict row) {
+static inline void vec_sub(int16_t *restrict dst, const int16_t *restrict row, int n) {
 #if defined(__AVX2__)
-    for (int i = 0; i < NNUE_HIDDEN; i += 16) {
+    for (int i = 0; i < n; i += 16) {
         __m256i a = _mm256_loadu_si256((const __m256i *) (dst + i));
         __m256i w = _mm256_loadu_si256((const __m256i *) (row + i));
         _mm256_storeu_si256((__m256i *) (dst + i), _mm256_sub_epi16(a, w));
     }
 #else
-    for (int i = 0; i < NNUE_HIDDEN; i++) {
+    for (int i = 0; i < n; i++) {
         dst[i] = (int16_t) (dst[i] - row[i]);
     }
 #endif
 }
 
 static inline void vec_sub_add(int16_t *restrict dst, const int16_t *restrict src,
-    const int16_t *restrict sub_row, const int16_t *restrict add_row) {
+    const int16_t *restrict sub_row, const int16_t *restrict add_row, int n) {
 #if defined(__AVX2__)
-    for (int i = 0; i < NNUE_HIDDEN; i += 16) {
+    for (int i = 0; i < n; i += 16) {
         __m256i v = _mm256_loadu_si256((const __m256i *) (src + i));
         __m256i s = _mm256_loadu_si256((const __m256i *) (sub_row + i));
         __m256i a = _mm256_loadu_si256((const __m256i *) (add_row + i));
@@ -125,16 +172,17 @@ static inline void vec_sub_add(int16_t *restrict dst, const int16_t *restrict sr
         _mm256_storeu_si256((__m256i *) (dst + i), v);
     }
 #else
-    for (int i = 0; i < NNUE_HIDDEN; i++) {
+    for (int i = 0; i < n; i++) {
         dst[i] = (int16_t) (src[i] - sub_row[i] + add_row[i]);
     }
 #endif
 }
 
 static inline void vec_sub2_add1(int16_t *restrict dst, const int16_t *restrict src,
-    const int16_t *restrict sub1, const int16_t *restrict sub2, const int16_t *restrict add1) {
+    const int16_t *restrict sub1, const int16_t *restrict sub2, const int16_t *restrict add1,
+    int n) {
 #if defined(__AVX2__)
-    for (int i = 0; i < NNUE_HIDDEN; i += 16) {
+    for (int i = 0; i < n; i += 16) {
         __m256i v = _mm256_loadu_si256((const __m256i *) (src + i));
         __m256i s1 = _mm256_loadu_si256((const __m256i *) (sub1 + i));
         __m256i s2 = _mm256_loadu_si256((const __m256i *) (sub2 + i));
@@ -145,7 +193,7 @@ static inline void vec_sub2_add1(int16_t *restrict dst, const int16_t *restrict 
         _mm256_storeu_si256((__m256i *) (dst + i), v);
     }
 #else
-    for (int i = 0; i < NNUE_HIDDEN; i++) {
+    for (int i = 0; i < n; i++) {
         dst[i] = (int16_t) (src[i] - sub1[i] - sub2[i] + add1[i]);
     }
 #endif
@@ -153,9 +201,9 @@ static inline void vec_sub2_add1(int16_t *restrict dst, const int16_t *restrict 
 
 static inline void vec_sub2_add2(int16_t *restrict dst, const int16_t *restrict src,
     const int16_t *restrict sub1, const int16_t *restrict sub2, const int16_t *restrict add1,
-    const int16_t *restrict add2) {
+    const int16_t *restrict add2, int n) {
 #if defined(__AVX2__)
-    for (int i = 0; i < NNUE_HIDDEN; i += 16) {
+    for (int i = 0; i < n; i += 16) {
         __m256i v = _mm256_loadu_si256((const __m256i *) (src + i));
         __m256i s1 = _mm256_loadu_si256((const __m256i *) (sub1 + i));
         __m256i s2 = _mm256_loadu_si256((const __m256i *) (sub2 + i));
@@ -168,21 +216,17 @@ static inline void vec_sub2_add2(int16_t *restrict dst, const int16_t *restrict 
         _mm256_storeu_si256((__m256i *) (dst + i), v);
     }
 #else
-    for (int i = 0; i < NNUE_HIDDEN; i++) {
+    for (int i = 0; i < n; i++) {
         dst[i] = (int16_t) (src[i] - sub1[i] - sub2[i] + add1[i] + add2[i]);
     }
 #endif
 }
 
-// =========================================================================
-// Canonical White-at-Bottom Extraction & Finny Cache Refresh
-// =========================================================================
-
 static inline u64 bswap_ranks(u64 bb) {
     return __builtin_bswap64(bb);
 }
 
-static inline void extract_canonical_bbs(const chess *b, u64 out[2][6]) {
+static void extract_canonical_bbs(const chess *b, u64 out[2][6]) {
     bool btm = is_flipped(b);
     int fc = btm ? 1 : 0;
     int ec = 1 - fc;
@@ -240,33 +284,36 @@ static inline void extract_canonical_bbs(const chess *b, u64 out[2][6]) {
 }
 
 static void refresh_persp_scratch(int16_t *dst_v, const u64 bbs[2][6], int persp, int king_wsq) {
+    int n = g_nnue_hidden;
     int hm = 0;
-    int kb = nnue_king_bucket(persp, king_wsq, &hm);
-    memcpy(dst_v, g_net.ft_bias, sizeof(int16_t) * NNUE_HIDDEN);
+    int kb = nnue_king_bucket_for(g_nnue_kb, persp, king_wsq, &hm);
+    memcpy(dst_v, g_net.ft_bias, sizeof(int16_t) * (size_t) n);
     for (int c = 0; c < 2; c++) {
         for (int pt = 0; pt < 6; pt++) {
             u64 bb = bbs[c][pt];
             while (bb) {
                 int wsq = __builtin_ctzll(bb);
                 bb &= bb - 1ull;
-                vec_add(dst_v, g_net.ft_weights[nnue_feat_idx(persp, kb, hm, c, pt, wsq)]);
+                vec_add(dst_v, g_net.ft_weights[nnue_feat_idx(persp, kb, hm, c, pt, wsq)], n);
             }
         }
     }
 }
 
-static void refresh_persp_finny(int16_t *dst_v, nnue_finny_entry finny[2][NNUE_KING_BUCKETS][2],
-    const u64 bbs[2][6], int persp, int king_wsq) {
+static void refresh_persp_finny(int16_t *dst_v,
+    nnue_finny_entry finny[2][NNUE_MAX_KING_BUCKETS][2], const u64 bbs[2][6], int persp,
+    int king_wsq) {
     if (!finny) {
         refresh_persp_scratch(dst_v, bbs, persp, king_wsq);
         return;
     }
+    int n = g_nnue_hidden;
     int hm = 0;
-    int kb = nnue_king_bucket(persp, king_wsq, &hm);
+    int kb = nnue_king_bucket_for(g_nnue_kb, persp, king_wsq, &hm);
     nnue_finny_entry *fe = &finny[persp][kb][hm ? 1 : 0];
 
     if (!fe->initialized || fe->gen != g_nnue_gen) {
-        memcpy(fe->v, g_net.ft_bias, sizeof(fe->v));
+        memcpy(fe->v, g_net.ft_bias, sizeof(int16_t) * (size_t) n);
         memset(fe->by_color_pt, 0, sizeof(fe->by_color_pt));
         fe->gen = g_nnue_gen;
         fe->initialized = 1u;
@@ -284,17 +331,17 @@ static void refresh_persp_finny(int16_t *dst_v, nnue_finny_entry finny[2][NNUE_K
             while (added) {
                 int wsq = __builtin_ctzll(added);
                 added &= added - 1ull;
-                vec_add(fe->v, g_net.ft_weights[nnue_feat_idx(persp, kb, hm, c, pt, wsq)]);
+                vec_add(fe->v, g_net.ft_weights[nnue_feat_idx(persp, kb, hm, c, pt, wsq)], n);
             }
             while (removed) {
                 int wsq = __builtin_ctzll(removed);
                 removed &= removed - 1ull;
-                vec_sub(fe->v, g_net.ft_weights[nnue_feat_idx(persp, kb, hm, c, pt, wsq)]);
+                vec_sub(fe->v, g_net.ft_weights[nnue_feat_idx(persp, kb, hm, c, pt, wsq)], n);
             }
             fe->by_color_pt[c][pt] = cur;
         }
     }
-    memcpy(dst_v, fe->v, sizeof(fe->v));
+    memcpy(dst_v, fe->v, sizeof(int16_t) * (size_t) n);
 }
 
 void nnue_acc_refresh(nnue_acc *acc, const chess *b) {
@@ -334,9 +381,9 @@ static inline int nnue_pt_idx(u8 pc) {
     }
 }
 
-// Apply a single incremental move delta for perspective `persp` (assumes king bucket/mirror unchanged).
 static inline void apply_move_persp(
     int16_t *dst_v, const int16_t *src_v, int persp, int kb, int hm, bool btm, u64 m) {
+    int n = g_nnue_hidden;
     int flip_mask = btm ? 56 : 0;
     int mover = btm ? 1 : 0;
     int enemy = 1 - mover;
@@ -354,7 +401,7 @@ static inline void apply_move_persp(
             g_net.ft_weights[nnue_feat_idx(persp, kb, hm, mover, 5, from_wsq)],
             g_net.ft_weights[nnue_feat_idx(persp, kb, hm, mover, 3, r_from)],
             g_net.ft_weights[nnue_feat_idx(persp, kb, hm, mover, 5, to_wsq)],
-            g_net.ft_weights[nnue_feat_idx(persp, kb, hm, mover, 3, r_to)]);
+            g_net.ft_weights[nnue_feat_idx(persp, kb, hm, mover, 3, r_to)], n);
     } else if (is_castle_queen_move(m)) {
         int r_from = 0 ^ flip_mask;
         int r_to = 3 ^ flip_mask;
@@ -362,23 +409,23 @@ static inline void apply_move_persp(
             g_net.ft_weights[nnue_feat_idx(persp, kb, hm, mover, 5, from_wsq)],
             g_net.ft_weights[nnue_feat_idx(persp, kb, hm, mover, 3, r_from)],
             g_net.ft_weights[nnue_feat_idx(persp, kb, hm, mover, 5, to_wsq)],
-            g_net.ft_weights[nnue_feat_idx(persp, kb, hm, mover, 3, r_to)]);
+            g_net.ft_weights[nnue_feat_idx(persp, kb, hm, mover, 3, r_to)], n);
     } else if (is_en_passant_move(m)) {
         int cap_wsq = (get_end_offset(m) - 8) ^ flip_mask;
         vec_sub2_add1(dst_v, src_v,
             g_net.ft_weights[nnue_feat_idx(persp, kb, hm, mover, 0, from_wsq)],
             g_net.ft_weights[nnue_feat_idx(persp, kb, hm, enemy, 0, cap_wsq)],
-            g_net.ft_weights[nnue_feat_idx(persp, kb, hm, mover, 0, to_wsq)]);
+            g_net.ft_weights[nnue_feat_idx(persp, kb, hm, mover, 0, to_wsq)], n);
     } else if (cap != NONE) {
         int cap_pt = nnue_pt_idx(cap);
         vec_sub2_add1(dst_v, src_v,
             g_net.ft_weights[nnue_feat_idx(persp, kb, hm, mover, sp_pt, from_wsq)],
             g_net.ft_weights[nnue_feat_idx(persp, kb, hm, enemy, cap_pt, to_wsq)],
-            g_net.ft_weights[nnue_feat_idx(persp, kb, hm, mover, pr_pt, to_wsq)]);
+            g_net.ft_weights[nnue_feat_idx(persp, kb, hm, mover, pr_pt, to_wsq)], n);
     } else {
         vec_sub_add(dst_v, src_v,
             g_net.ft_weights[nnue_feat_idx(persp, kb, hm, mover, sp_pt, from_wsq)],
-            g_net.ft_weights[nnue_feat_idx(persp, kb, hm, mover, pr_pt, to_wsq)]);
+            g_net.ft_weights[nnue_feat_idx(persp, kb, hm, mover, pr_pt, to_wsq)], n);
     }
 }
 
@@ -407,8 +454,8 @@ void nnue_acc_make_move(nnue_acc *dst, const nnue_acc *src, const chess *before,
     bool refresh_p[2] = { false, false };
     for (int p = 0; p < 2; p++) {
         int old_hm = 0, new_hm = 0;
-        int old_kb = nnue_king_bucket(p, old_ksq[p], &old_hm);
-        int new_kb = nnue_king_bucket(p, new_ksq[p], &new_hm);
+        int old_kb = nnue_king_bucket_for(g_nnue_kb, p, old_ksq[p], &old_hm);
+        int new_kb = nnue_king_bucket_for(g_nnue_kb, p, new_ksq[p], &new_hm);
         kb_arr[p] = new_kb;
         hm_arr[p] = new_hm;
         if (old_kb != new_kb || old_hm != new_hm) {
@@ -436,7 +483,7 @@ void nnue_acc_make_move(nnue_acc *dst, const nnue_acc *src, const chess *before,
 }
 
 void nnue_acc_materialize(
-    nnue_acc *stack, nnue_finny_entry finny[2][NNUE_KING_BUCKETS][2], int ply, const chess *b) {
+    nnue_acc *stack, nnue_finny_entry finny[2][NNUE_MAX_KING_BUCKETS][2], int ply, const chess *b) {
     if (!g_nnue_loaded || !stack || ply < 0) {
         return;
     }
@@ -463,11 +510,11 @@ void nnue_acc_materialize(
         return;
     }
 
-    // Track king squares & detect whether either perspective crossed a king bucket or mirror line
+    int n = g_nnue_hidden;
     int cur_ksq[2] = { stack[p].ksq[0], stack[p].ksq[1] };
     int base_hm[2], base_kb[2];
-    base_kb[0] = nnue_king_bucket(0, cur_ksq[0], &base_hm[0]);
-    base_kb[1] = nnue_king_bucket(1, cur_ksq[1], &base_hm[1]);
+    base_kb[0] = nnue_king_bucket_for(g_nnue_kb, 0, cur_ksq[0], &base_hm[0]);
+    base_kb[1] = nnue_king_bucket_for(g_nnue_kb, 1, cur_ksq[1], &base_hm[1]);
     bool needs_refresh[2] = { false, false };
 
     for (int k = p + 1; k <= ply; k++) {
@@ -480,7 +527,7 @@ void nnue_acc_materialize(
                 int to_wsq = get_end_offset(m) ^ (btm ? 56 : 0);
                 cur_ksq[mover] = to_wsq;
                 int nhm = 0;
-                int nkb = nnue_king_bucket(mover, to_wsq, &nhm);
+                int nkb = nnue_king_bucket_for(g_nnue_kb, mover, to_wsq, &nhm);
                 if (nkb != base_kb[mover] || nhm != base_hm[mover]) {
                     needs_refresh[mover] = true;
                 }
@@ -501,7 +548,7 @@ void nnue_acc_materialize(
         } else {
             for (int k = p + 1; k <= ply; k++) {
                 if (stack[k].move == NULL_MOVE) {
-                    memcpy(stack[k].v[persp], stack[k - 1].v[persp], sizeof(stack[k].v[persp]));
+                    memcpy(stack[k].v[persp], stack[k - 1].v[persp], sizeof(int16_t) * (size_t) n);
                 } else {
                     apply_move_persp(stack[k].v[persp], stack[k - 1].v[persp], persp,
                         base_kb[persp], base_hm[persp], stack[k].before_flipped != 0u,
@@ -543,6 +590,7 @@ int nnue_eval_acc(const nnue_acc *acc, const chess *b) {
         acc = &tmp;
     }
 
+    int n = g_nnue_hidden;
     int stm = is_flipped(b) ? 1 : 0;
     const int16_t *restrict stm_v = acc->v[stm];
     const int16_t *restrict opp_v = acc->v[1 - stm];
@@ -555,7 +603,7 @@ int nnue_eval_acc(const nnue_acc *acc, const chess *b) {
     __m256i v_qa = _mm256_set1_epi16((int16_t) NNUE_QA);
     __m256i v_sum = _mm256_setzero_si256();
 
-    for (int i = 0; i < NNUE_HIDDEN; i += 16) {
+    for (int i = 0; i < n; i += 16) {
         __m256i a0 = _mm256_loadu_si256((const __m256i *) (stm_v + i));
         __m256i c0 = _mm256_min_epi16(_mm256_max_epi16(a0, v_zero), v_qa);
         __m256i w0 = _mm256_loadu_si256((const __m256i *) (ow + i));
@@ -564,7 +612,7 @@ int nnue_eval_acc(const nnue_acc *acc, const chess *b) {
 
         __m256i a1 = _mm256_loadu_si256((const __m256i *) (opp_v + i));
         __m256i c1 = _mm256_min_epi16(_mm256_max_epi16(a1, v_zero), v_qa);
-        __m256i w1 = _mm256_loadu_si256((const __m256i *) (ow + NNUE_HIDDEN + i));
+        __m256i w1 = _mm256_loadu_si256((const __m256i *) (ow + n + i));
         __m256i cw1 = _mm256_mullo_epi16(c1, w1);
         v_sum = _mm256_add_epi32(v_sum, _mm256_madd_epi16(cw1, c1));
     }
@@ -576,7 +624,7 @@ int nnue_eval_acc(const nnue_acc *acc, const chess *b) {
     __m128i s1 = _mm_add_epi32(s2, _mm_shuffle_epi32(s2, _MM_SHUFFLE(2, 3, 0, 1)));
     sum = (int64_t) _mm_cvtsi128_si32(s1);
 #else
-    for (int i = 0; i < NNUE_HIDDEN; i++) {
+    for (int i = 0; i < n; i++) {
         int32_t v0 = stm_v[i];
         if (v0 < 0) {
             v0 = 0;
@@ -591,7 +639,7 @@ int nnue_eval_acc(const nnue_acc *acc, const chess *b) {
         } else if (v1 > NNUE_QA) {
             v1 = NNUE_QA;
         }
-        sum += (int64_t) (v1 * v1) * (int64_t) ow[NNUE_HIDDEN + i];
+        sum += (int64_t) (v1 * v1) * (int64_t) ow[n + i];
     }
 #endif
 

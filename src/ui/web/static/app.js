@@ -245,16 +245,25 @@
       t.el.innerHTML = "";
       for (const p of presets) {
         let eloTag = "";
-        if ((p.engine === "c" || p.engine === "az") && p.has_elo) {
+        if ((p.engine === "c" || p.engine === "az" || p.engine === "hybrid" || p.engine === "apex") && p.has_elo) {
           eloTag = p.is_relative ? ` (${p.est_elo >= 0 ? "+" : ""}${p.est_elo} rel)` : ` (~${p.est_elo} Elo)`;
         }
         const prefix = p.engine === "c" ? "Titan-C " : "";
-        const label = p.available
-          ? `${p.level} - ${prefix}${p.name}${eloTag}`
-          : `${p.level} - ${prefix}${p.name} (unavailable)`;
+        let label;
+        if (p.locked) {
+          label = p.needs_syzygy
+            ? `🔒 ${p.level} - ${p.name} (Needs 'make syzygy-5')`
+            : p.needs_distill
+            ? `🔒 ${p.level} - ${p.name} (Locked • Needs NNUE Distillation)`
+            : `🔒 ${p.level} - ${p.name} (Locked • After Zero-C v2)`;
+        } else if (p.available) {
+          label = `${p.level} - ${prefix}${p.name}${eloTag}`;
+        } else {
+          label = `${p.level} - ${prefix}${p.name} (unavailable)`;
+        }
         const opt = new Option(label, String(p.level));
         opt.title = p.desc;
-        if (!p.available) opt.disabled = true;
+        if (!p.available || p.locked) opt.disabled = true;
         t.el.add(opt);
       }
       if ([...t.el.options].some((o) => o.value === prev && !o.disabled)) {
@@ -265,6 +274,22 @@
     }
     if (state && state.stockfish_available) {
       $("sf-analyze-wrap").classList.remove("hidden");
+    }
+
+    // Sync lock state of Hybrid Boss options in Elo Calculator & Gauntlet Scope
+    for (const p of presets) {
+      if (p.engine !== "hybrid") continue;
+      for (const selId of ["calc-bot", "gt-scope"]) {
+        const sel = $(selId);
+        if (!sel) continue;
+        const opt = [...sel.options].find((o) => o.value === String(p.level));
+        if (opt) {
+          opt.disabled = Boolean(p.locked || !p.available);
+          if (!p.locked && p.available) {
+            opt.textContent = `⚡ ${p.name} (Hybrid Boss)`;
+          }
+        }
+      }
     }
 
     const eloMini = $("home-elo-mini");
@@ -280,6 +305,10 @@
           )
           .join("");
       }
+    }
+
+    if (typeof renderHomeFightersPreview === "function") {
+      renderHomeFightersPreview();
     }
   }
 
@@ -329,10 +358,23 @@
 
   function renderStrips() {
     const topIsWhite = flipped;
+    const topName = topIsWhite ? state.white_name : state.black_name;
+    const botName = topIsWhite ? state.black_name : state.white_name;
+    const topLvl = topIsWhite
+      ? (state.mode === "black" || state.mode === "watch" ? state.white_level : 0)
+      : (state.mode === "white" || state.mode === "watch" ? state.black_level : 0);
+    const botLvl = topIsWhite
+      ? (state.mode === "white" || state.mode === "watch" ? state.black_level : 0)
+      : (state.mode === "black" || state.mode === "watch" ? state.white_level : 0);
+
     $("top-dot").className = `player-dot ${topIsWhite ? "white" : "black"}`;
     $("bottom-dot").className = `player-dot ${topIsWhite ? "black" : "white"}`;
-    $("top-name").textContent = topIsWhite ? state.white_name : state.black_name;
-    $("bottom-name").textContent = topIsWhite ? state.black_name : state.white_name;
+    $("top-name").textContent = topName;
+    $("bottom-name").textContent = botName;
+    if (typeof applyStripAvatar === "function") {
+      applyStripAvatar($("top-avatar"), topName, topLvl);
+      applyStripAvatar($("bottom-avatar"), botName, botLvl);
+    }
 
     renderCaptured($("top-captured"), topIsWhite ? state.captured.white : state.captured.black);
     renderCaptured($("bottom-captured"), topIsWhite ? state.captured.black : state.captured.white);
@@ -1293,7 +1335,7 @@
         </div>
         <div class="acc-pills">
           <span class="term-dim">ACPL ${s.acpl}</span>
-          ${s.brilliant > 0 ? `<span class="badge-brilliant">!! ${s.brilliant}</span>` : ""}
+          <span class="${(s.brilliant || 0) > 0 ? "badge-brilliant" : "badge-brilliant-zero"}" title="Brilliant tactical sacrifices">!! ${s.brilliant || 0}</span>
           <span class="badge-best">&#9733; ${s.best}</span>
           <span class="badge-good">&#10003; ${s.good}</span>
           <span class="badge-inaccuracy">?! ${s.inaccuracy}</span>
@@ -1356,7 +1398,7 @@
       <div class="rev-filter-bar" id="rev-filter-bar">
         <button class="rev-filter-btn active" data-rf="all">All Moves (${rev.moves.length})</button>
         <button class="rev-filter-btn" data-rf="errors">Key Mistakes (${totBlund + totMist + totInacc})</button>
-        ${totBril > 0 ? `<button class="rev-filter-btn" data-rf="brilliant"><span class="badge-brilliant">!! Brilliant (${totBril})</span></button>` : ""}
+        <button class="rev-filter-btn" data-rf="brilliant"><span class="${totBril > 0 ? "badge-brilliant" : "badge-brilliant-zero"}">!! Brilliant (${totBril})</span></button>
         <button class="rev-filter-btn" data-rf="blunder"><span class="badge-blunder">?? Blunders (${totBlund})</span></button>
         <button class="rev-filter-btn" data-rf="mistake"><span class="badge-mistake">? Mistakes (${totMist})</span></button>
         <button class="rev-filter-btn" data-rf="inaccuracy"><span class="badge-inaccuracy">?! Inaccuracies (${totInacc})</span></button>
@@ -1714,6 +1756,27 @@
       })
       .join("");
 
+    // Append the 4 Mythic Hybrid Bosses to the Arena Ladder (Locked until Zero-C v2 completes)
+    if (state && state.presets) {
+      const hybrids = state.presets.filter((p) => p.engine === "hybrid");
+      if (hybrids.length > 0) {
+        $("gt-table-body").innerHTML += hybrids
+          .map((h) => {
+            const locked = Boolean(h.locked || !h.available);
+            const lockTxt = h.needs_distill ? "Locked (Needs Distillation)" : "Locked (Zero-C v2)";
+            return `<tr class="${locked ? "gt-locked-row" : ""}">
+              <td><strong>${locked ? "&#128274;" : "&#9889;"} ${h.name}</strong></td>
+              <td>Stockfish (FIDE Elo)</td>
+              <td class="${locked ? "gt-pill-locked" : "gt-pill-pending"}">${locked ? lockTxt : "Ready"}</td>
+              <td>&mdash;</td>
+              <td>&mdash;</td>
+              <td><strong>${locked ? "Est. 2400–2550+" : "Unrated"}</strong></td>
+            </tr>`;
+          })
+          .join("");
+      }
+    }
+
     // Render Precision Elo Calculator Dashboard
     const cs = gs.calc;
     if (cs && cs.active) {
@@ -1997,6 +2060,10 @@
     const genLbl = `Zero-C v2 (Gen ${az.gen || 0})`;
     $("top-name").textContent = flipped ? `${genLbl} • White` : `${genLbl} • Black`;
     $("bottom-name").textContent = flipped ? `${genLbl} • Black` : `${genLbl} • White`;
+    if (typeof applyStripAvatar === "function") {
+      applyStripAvatar($("top-avatar"), genLbl, 12);
+      applyStripAvatar($("bottom-avatar"), genLbl, 12);
+    }
     const bTurn = g.fen && g.fen.includes(" b ");
     $("status-pill").textContent = `Live Self-Play • ${bTurn ? "Black" : "White"} thinking (${g.sims_done}/${g.sims_target})`;
     $("opening-pill").textContent = `Self-Play Game #${g.id + 1}`;
@@ -2360,6 +2427,7 @@
     const isRunning = Boolean(az.running && az.proc_alive !== false);
 
     $("btn-az-start").classList.toggle("hidden", isRunning);
+    if ($("btn-az-throttle")) $("btn-az-throttle").classList.toggle("hidden", isRunning);
     $("btn-az-stop").classList.toggle("hidden", !isRunning);
     const badge = $("az-phase-badge");
     badge.textContent = isRunning ? (az.phase === "training" ? "FP16 TRAINING" : "SELF-PLAY") : "IDLE";
@@ -2392,7 +2460,9 @@
     if (sessStrip && sessTxt) {
       if (cfg && (isRunning || (az.gen || 0) > 0)) {
         const repMaxM = ((az.replay_max || 1200000) / 1e6).toFixed(1);
-        const modePrefix = isRunning ? "Active Session:" : "Last Session Config:";
+        const modePrefix = isRunning
+          ? (cfg.full_throttle ? "🔥 FULL THROTTLE Active:" : "Active Session:")
+          : "Last Session Config:";
         sessStrip.classList.remove("hidden");
         sessStrip.classList.toggle("paused", !isRunning);
         sessTxt.innerHTML =
@@ -2598,23 +2668,293 @@
 
     // Update Home Card 7 live summary too!
     if ($("home-az-pill")) {
-      $("home-az-pill").textContent = `${isRunning ? "Training" : "Idle"} • Gen ${az.gen || 0}`;
-      $("home-az-pill").classList.toggle("active", isRunning);
+      const compDone = Boolean(az.hybrids_unlocked || (az.completion && az.completion.is_complete));
+      $("home-az-pill").textContent = compDone
+        ? `✅ Complete • Gen ${az.gen || 0}`
+        : `${isRunning ? "Training" : "Idle"} • Gen ${az.gen || 0}`;
+      $("home-az-pill").classList.toggle("active", isRunning || compDone);
       $("home-az-gen").textContent = String(az.gen || 0);
       $("home-az-games").textContent = String(az.total_games || 0);
       $("home-az-pos").textContent = (az.total_positions || 0).toLocaleString();
       $("home-az-dev").textContent = az.device || "Ready";
     }
+
+    renderAzCompletion(az, isRunning);
+  }
+
+  function computeClientCompletion(az) {
+    const gen = az.gen || 0;
+    const totalGames = az.total_games || 0;
+    const baseLr = az.base_lr || 0.0015;
+    const hist = az.history || [];
+    const lastH = hist.length > 0 ? hist[hist.length - 1] : null;
+    const curLr = az.lr != null ? az.lr : (lastH && lastH.lr != null ? lastH.lr : baseLr);
+    const MIN_GAMES = 500000;
+    const SCHEDULE_END_GEN = 5500;
+    const LR_TAIL_THRESH = Math.max(0.00026, baseLr * 0.175);
+    const WINDOW = 50;
+    const STRIDE = 150;
+    const flagExists = Boolean(az.hybrids_unlocked);
+
+    const g1Pass = totalGames >= MIN_GAMES;
+    const g1Pct = Math.min(1, totalGames / MIN_GAMES);
+    const g2Pass = curLr <= LR_TAIL_THRESH || gen >= SCHEDULE_END_GEN;
+    const lrStart = Math.max(baseLr * 0.4, LR_TAIL_THRESH + 1e-6);
+    const g2Pct = g2Pass ? 1 : Math.max(0, Math.min(1, (lrStart - curLr) / Math.max(1e-6, lrStart - LR_TAIL_THRESH)));
+
+    let polDrop = null, accGain = null, mlDrop = null, avgPlies = null;
+    const hasWin = hist.length >= STRIDE + WINDOW;
+    if (hasWin) {
+      const recent = hist.slice(-WINDOW);
+      const older = hist.slice(-(STRIDE + WINDOW), -STRIDE);
+      const mean = (arr, k) => arr.reduce((s, x) => s + (Number(x[k]) || 0), 0) / Math.max(1, arr.length);
+      polDrop = Number((mean(older, "pol_loss") - mean(recent, "pol_loss")).toFixed(4));
+      accGain = Number((mean(recent, "pol_acc") - mean(older, "pol_acc")).toFixed(2));
+      mlDrop = Number((mean(older, "ml_loss") - mean(recent, "ml_loss")).toFixed(4));
+      avgPlies = Number(mean(recent, "avg_plies").toFixed(1));
+    }
+
+    const g3Pass = Boolean(hasWin && polDrop < 0.015 && accGain < 0.4);
+    const g4Pass = Boolean(hasWin && mlDrop < 0.003 && avgPlies >= 85);
+    const pathA = gen >= SCHEDULE_END_GEN && g1Pass;
+    const pathB = g1Pass && g2Pass && g3Pass && g4Pass;
+    const convergedNow = pathA || pathB;
+    const isComplete = flagExists || convergedNow;
+
+    let pct = 100;
+    if (!isComplete) {
+      const schedPct = Math.min(1, gen / SCHEDULE_END_GEN);
+      const platBonus = (g3Pass ? 0.1 : 0) + (g4Pass ? 0.05 : 0);
+      pct = Number(Math.min(99, 100 * (0.45 * g1Pct + 0.4 * Math.max(g2Pct, schedPct) + platBonus)).toFixed(1));
+    }
+    const status = isComplete ? "complete" : g1Pass && (g2Pass || g3Pass) ? "nearing" : "training";
+    const reason = isComplete
+      ? flagExists
+        ? "Zero-C v2 graduated — all 4 Mythic Hybrid Bosses unlocked!"
+        : `Convergence criteria satisfied at Gen ${gen.toLocaleString()}!`
+      : status === "nearing"
+      ? "Past 500k games and entering final fine-tune/plateau window."
+      : "Actively climbing — network is still absorbing new self-play discoveries.";
+
+    return {
+      status,
+      is_complete: isComplete,
+      converged_now: convergedNow,
+      flag_exists: flagExists,
+      progress_pct: pct,
+      reason,
+      gates: {
+        experience: { passed: g1Pass, current: totalGames, target: MIN_GAMES },
+        lr_anneal: { passed: g2Pass, current_lr: Number(curLr.toFixed(6)), target_lr: Number(LR_TAIL_THRESH.toFixed(6)), gen, schedule_end_gen: SCHEDULE_END_GEN },
+        policy_plateau: { passed: g3Pass, ready: hasWin, pol_loss_drop_150g: polDrop, pol_acc_gain_150g: accGain },
+        endgame_stability: { passed: g4Pass, ready: hasWin, ml_loss_drop_150g: mlDrop, avg_plies: avgPlies },
+      },
+    };
+  }
+
+  let azWasCompleteToastShown = false;
+
+  function renderAzCompletion(az, isRunning) {
+    const panel = $("az-completion-panel");
+    if (!panel) return;
+    const comp = az.completion ? { ...az.completion } : computeClientCompletion(az);
+    if (az.hybrids_unlocked) {
+      comp.is_complete = true;
+      comp.status = "complete";
+      comp.progress_pct = 100;
+    }
+
+    panel.classList.remove("nearing", "complete");
+    if (comp.status === "complete") panel.classList.add("complete");
+    else if (comp.status === "nearing") panel.classList.add("nearing");
+
+    const badge = $("az-comp-badge");
+    const nnueDone = Boolean(az.nnue_distilled);
+    if (badge) {
+      badge.innerHTML =
+        comp.status === "complete"
+          ? nnueDone
+            ? "&#9989; TRAINING COMPLETE &bull; ALL 4 HYBRIDS UNLOCKED"
+            : "&#9989; ZERO-C v2 COMPLETE &bull; 3/4 HYBRIDS UNLOCKED"
+          : comp.status === "nearing"
+          ? "&#9889; NEARING CONVERGENCE"
+          : "&#9203; TRAINING IN PROGRESS";
+    }
+    if ($("az-comp-pct")) $("az-comp-pct").textContent = `${Math.round(comp.progress_pct || 0)}%`;
+    if ($("az-comp-reason")) $("az-comp-reason").textContent = comp.reason || "";
+    if ($("az-comp-bar-fill")) $("az-comp-bar-fill").style.width = `${Math.max(0, Math.min(100, comp.progress_pct || 0)).toFixed(1)}%`;
+
+    // ETA estimate based on remaining games to 500k or remaining gens to 5500
+    const etaEl = $("az-comp-eta");
+    if (etaEl) {
+      if (comp.is_complete) {
+        etaEl.textContent = "Status: Graduated ✓";
+      } else {
+        const gph = az.games_per_hr || 0;
+        const remGames = Math.max(0, 500000 - (az.total_games || 0));
+        if (isRunning && gph >= 50) {
+          const hrsTo500k = remGames / gph;
+          etaEl.textContent =
+            remGames > 0
+              ? `~${hrsTo500k < 1 ? `${Math.round(hrsTo500k * 60)}m` : `${hrsTo500k.toFixed(1)}h`} to 500k gate`
+              : "500k gate cleared — watching LR & plateau";
+        } else {
+          etaEl.textContent = remGames > 0 ? `${(remGames / 1000).toFixed(1)}k games to 500k gate` : "500k gate cleared";
+        }
+      }
+    }
+
+    const g = comp.gates || {};
+    const g1 = $("az-gate-1");
+    if (g1 && g.experience) {
+      g1.classList.toggle("pass", Boolean(g.experience.passed));
+      const curK = (g.experience.current / 1000).toFixed(1);
+      const tgtK = (g.experience.target / 1000).toFixed(0);
+      g1.innerHTML = `<b>${g.experience.passed ? "✓" : "○"} 1. Experience</b><span>${curK}k / ${tgtK}k games</span>`;
+    }
+    const g2 = $("az-gate-2");
+    if (g2 && g.lr_anneal) {
+      g2.classList.toggle("pass", Boolean(g.lr_anneal.passed));
+      g2.innerHTML = `<b>${g.lr_anneal.passed ? "✓" : "○"} 2. LR Anneal</b><span>${Number(g.lr_anneal.current_lr).toFixed(5)} &rarr; &le;${Number(g.lr_anneal.target_lr).toFixed(5)}</span>`;
+    }
+    const g3 = $("az-gate-3");
+    if (g3 && g.policy_plateau) {
+      g3.classList.toggle("pass", Boolean(g.policy_plateau.passed));
+      const txt = g.policy_plateau.ready
+        ? `ΔPol ${g.policy_plateau.pol_loss_drop_150g >= 0 ? "-" : "+"}${Math.abs(g.policy_plateau.pol_loss_drop_150g).toFixed(3)} • ΔAcc ${g.policy_plateau.pol_acc_gain_150g >= 0 ? "+" : ""}${g.policy_plateau.pol_acc_gain_150g.toFixed(1)}%`
+        : "Gathering 200-gen window...";
+      g3.innerHTML = `<b>${g.policy_plateau.passed ? "✓" : "○"} 3. Policy Plateau</b><span>${txt}</span>`;
+    }
+    const g4 = $("az-gate-4");
+    if (g4 && g.endgame_stability) {
+      g4.classList.toggle("pass", Boolean(g.endgame_stability.passed));
+      const txt = g.endgame_stability.ready
+        ? `ΔML ${g.endgame_stability.ml_loss_drop_150g >= 0 ? "-" : "+"}${Math.abs(g.endgame_stability.ml_loss_drop_150g).toFixed(4)} • ${g.endgame_stability.avg_plies}p`
+        : "Gathering 200-gen window...";
+      g4.innerHTML = `<b>${g.endgame_stability.passed ? "✓" : "○"} 4. Endgame Stability</b><span>${txt}</span>`;
+    }
+
+    const unlockBtn = $("btn-az-unlock-now");
+    const openHybBtn = $("btn-az-open-hybrids");
+    if (unlockBtn) {
+      // Allow manual early graduation once at least 150k games are logged, or instant unlock if converged
+      const canManualUnlock = !comp.is_complete && (az.total_games || 0) >= 150000;
+      unlockBtn.classList.toggle("hidden", !canManualUnlock);
+    }
+    if (openHybBtn) {
+      openHybBtn.classList.toggle("hidden", !comp.is_complete);
+    }
+
+    if (comp.is_complete && !azWasCompleteToastShown && az.hybrids_unlocked) {
+      azWasCompleteToastShown = true;
+      // Refresh presets once so the unlocked Hybrids become selectable everywhere immediately!
+      api("/api/state", "GET").then((fresh) => {
+        if (fresh && fresh.ok) {
+          state = fresh;
+          populatePresets(state.presets);
+        }
+      });
+    }
+
+    // Stage 2: Singularity v5 Knowledge Distillation Forge UI
+    const dStrip = $("az-distill-strip");
+    const dMsg = $("az-distill-msg");
+    const dStart = $("btn-az-distill-start");
+    const dStop = $("btn-az-distill-stop");
+    const dBarWrap = $("az-distill-bar-wrap");
+    const dFill = $("az-distill-fill");
+    if (dStrip && dMsg && dStart && dStop) {
+      const dist = az.distill || null;
+      const dRunning = Boolean(az.distill_running || (dist && dist.running && az.distill_running !== false));
+      const v2Ready = Boolean(az.hybrids_unlocked);
+      dStrip.classList.toggle("ready", v2Ready && !nnueDone);
+      dStrip.classList.toggle("done", nnueDone);
+      dStart.classList.toggle("hidden", dRunning);
+      dStop.classList.toggle("hidden", !dRunning);
+      dStart.disabled = !v2Ready || isRunning;
+
+      if (dRunning && dist) {
+        dMsg.textContent = dist.message || "Distilling Zero-C v2 into AVX2 NNUE...";
+        if (dBarWrap && dFill) {
+          dBarWrap.classList.remove("hidden");
+          dFill.style.width = `${Math.max(2, Math.min(100, dist.progress_pct || 0)).toFixed(1)}%`;
+        }
+      } else if (nnueDone) {
+        dMsg.innerHTML =
+          (dist && dist.message) ||
+          "<strong>&#9989; Singularity v5 NNUE Forged!</strong> <code>data/chess_net_zero_v4.nnue</code> is live &amp; unlocked in all menus.";
+        dStart.innerHTML = "&#8635; Re-Distill NNUE";
+        if (dBarWrap && dFill) {
+          dBarWrap.classList.remove("hidden");
+          dFill.style.width = "100%";
+        }
+        if (!window._singularityUnlockedRefreshed) {
+          window._singularityUnlockedRefreshed = true;
+          api("/api/state", "GET").then((fresh) => {
+            if (fresh && fresh.ok) {
+              state = fresh;
+              populatePresets(state.presets);
+            }
+          });
+        }
+      } else if (v2Ready) {
+        dMsg.innerHTML = isRunning
+          ? "Zero-C v2 is graduated! <strong>Pause self-play training</strong> to give Distillation full RTX GPU access."
+          : "Zero-C v2 is complete! Click <strong>&#9889; Distill Singularity v5</strong> to compress the 3.56M ResNet into a real 200ns AVX2 NNUE (<code>data/chess_net_zero_v4.nnue</code>, ~2&ndash;4 min).";
+        if (dBarWrap) dBarWrap.classList.add("hidden");
+      } else {
+        dMsg.innerHTML =
+          "Sealed until Zero-C v2 completes: compresses the 3.56M ResNet into a brand-new 200ns AVX2 CPU network (<code>data/chess_net_zero_v4.nnue</code>).";
+        if (dBarWrap) dBarWrap.classList.add("hidden");
+      }
+    }
+  }
+
+  let r3kActiveTab = "map"; // "map" | "zeroc" | "forge" | "toy"
+  let p3kLastData = null;
+  let toyLastData = null;
+
+  function setR3kTab(tab, updateUrl = true) {
+    const valid = ["map", "zeroc", "forge", "toy"].includes(tab) ? tab : "map";
+    r3kActiveTab = valid;
+    if ($("r3k-tabs")) {
+      $("r3k-tabs")
+        .querySelectorAll(".r3k-tab")
+        .forEach((b) => b.classList.toggle("active", b.dataset.r3kTab === valid));
+    }
+    for (const id of ["map", "zeroc", "forge", "toy"]) {
+      const pane = $(`r3k-pane-${id}`);
+      if (pane) pane.classList.toggle("hidden", id !== valid);
+    }
+    if (updateUrl && !$("az-modal").classList.contains("hidden")) {
+      const routeMap = {
+        map: "/road-to-3k",
+        zeroc: "/zero-c",
+        forge: "/project-3000",
+        toy: "/toy-net",
+      };
+      syncUrl(routeMap[valid] || "/road-to-3k");
+    }
+    if (valid === "zeroc" && azLastData) {
+      updateAzChartsOnly(azLastData, true);
+    }
   }
 
   async function pollAzStatus() {
-    const az = await api("/api/az/status", "GET");
-    renderAzStatus(az);
+    const [az, p3k, toy] = await Promise.all([
+      api("/api/az/status", "GET"),
+      api("/api/p3k/status", "GET"),
+      api("/api/toy/status", "GET"),
+    ]);
+    if (az && az.ok) renderAzStatus(az);
+    if (p3k && p3k.ok) renderP3kStatus(p3k);
+    if (toy && toy.ok) renderToyStatus(toy);
+    renderRoadCampaign();
   }
 
   function startAzPolling() {
     stopAzPolling();
-    azPollTimer = setInterval(pollAzStatus, 1200);
+    azPollTimer = setInterval(pollAzStatus, 1300);
   }
 
   function stopAzPolling() {
@@ -2624,9 +2964,9 @@
     }
   }
 
-  async function openAzModal() {
+  async function openAzModal(initialTab = "map") {
     $("az-modal").classList.remove("hidden");
-    syncUrl("/zero-c");
+    setR3kTab(initialTab, true);
     await pollAzStatus();
     startAzPolling();
   }
@@ -2641,8 +2981,41 @@
   // Event Wiring
   // ==========================================================================
   $("btn-gauntlet").addEventListener("click", () => openGauntletModal());
-  $("btn-az-lab").addEventListener("click", () => openAzModal());
+  $("btn-az-lab").addEventListener("click", () => openAzModal("map"));
   $("btn-az-close").addEventListener("click", () => closeAzModal());
+  if ($("r3k-tabs")) {
+    $("r3k-tabs")
+      .querySelectorAll(".r3k-tab")
+      .forEach((b) => b.addEventListener("click", () => setR3kTab(b.dataset.r3kTab, true)));
+  }
+  if ($("btn-home-toy")) {
+    $("btn-home-toy").addEventListener("click", () => openAzModal("toy"));
+  }
+  if ($("btn-az-throttle")) {
+    $("btn-az-throttle").addEventListener("click", async () => {
+      const arch = $("az-arch").value || "pro";
+      setSelectIfOptionExists($("az-games"), "1024");
+      setSelectIfOptionExists($("az-playouts"), "48,400");
+      setSelectIfOptionExists($("az-gpg"), "256");
+      const res = await api("/api/az/start", "POST", {
+        arch,
+        games: 1024,
+        fast_sims: 48,
+        full_sims: 400,
+        games_per_gen: 256,
+        max_gens: 0,
+        reset: false,
+        full_throttle: true,
+      });
+      if (res && res.ok) {
+        renderAzStatus(res);
+        startAzPolling();
+        logTerm("🔥 Launched Full Throttle Overnight mode (1024 games, 10T C MCTS, 48/400 caps, 256 games/gen, 2.0M replay, FP16 batch 768)!", "term-ok");
+      } else {
+        logTerm((res && res.error) || "Failed to start Full Throttle training.", "term-err");
+      }
+    });
+  }
   $("btn-az-start").addEventListener("click", async () => {
     const arch = $("az-arch").value;
     const games = parseInt($("az-games").value, 10) || 64;
@@ -3530,6 +3903,7 @@
       $("review-modal").classList.add("hidden");
       $("puzzle-modal").classList.add("hidden");
       $("history-modal").classList.add("hidden");
+      closeFightersModal();
       closeGauntletModal();
       closeAzModal();
       selectedSq = null;
@@ -3546,6 +3920,7 @@
       !$("review-modal").classList.contains("hidden") ||
       !$("puzzle-modal").classList.contains("hidden") ||
       !$("history-modal").classList.contains("hidden") ||
+      !$("fighters-modal").classList.contains("hidden") ||
       !$("gauntlet-modal").classList.contains("hidden") ||
       !$("az-modal").classList.contains("hidden");
     if (inModal || currentScreen === "home") return;
@@ -3591,21 +3966,1485 @@
   });
 
   // ==========================================================================
+  // Hall of Champions — Anthropomorphized Fighters, Custom SVG Avatars & Lore
+  // ==========================================================================
+  const HUMAN_AVATAR_SVG = `<svg viewBox="0 0 64 64"><defs><radialGradient id="av-hum" cx="35%" cy="28%" r="72%"><stop offset="0%" stop-color="#304868"/><stop offset="100%" stop-color="#111824"/></radialGradient></defs><rect width="64" height="64" fill="url(#av-hum)"/><circle cx="32" cy="24" r="11" fill="#cfe4ff"/><path d="M14 58c2-12 10-18 18-18s16 6 18 18" fill="#58a6ff"/><path d="M24 14l4 4 4-6 4 6 4-4-2 6H26z" fill="#f0c14b"/></svg>`;
+
+  const FIGHTERS_ROSTER = [
+    {
+      id: "titan-1",
+      level: 1,
+      name: "Pip",
+      epithet: "The Wooden Squire",
+      botName: "Titan-C L1 • Novice",
+      faction: "titan",
+      factionLabel: "Titan-C Guild",
+      accent: "#7ee787",
+      defaultElo: "~900 Elo",
+      quote: "“Wait, was my queen still on that square?! Oh well—ONWARD!”",
+      style: "Plucky Blunderer",
+      weapon: "Depth-2 Wooden Sword",
+      stats: { tactics: 24, intuition: 20, speed: 98, creativity: 55, endgame: 18 },
+      lore: [
+        "Carved from spare chessboard maple and handed an oversized iron helmet, Pip is the youngest recruit in the Titan-C Guild. He memorized how every piece moves this morning and immediately volunteered to guard the front gate of the Studio.",
+        "Pip plays fast, fears nothing, and genuinely believes every pawn push is a brilliant attack. Don't underestimate his enthusiasm—if you fall asleep at the wheel, he will proudly deliver a back-rank mate and brag about it in the guild tavern for a week."
+      ],
+      avatar: `<svg viewBox="0 0 64 64"><rect width="64" height="64" fill="#18241d"/><circle cx="32" cy="36" r="16" fill="#d4a373"/><path d="M16 26c2-11 30-11 32 0l-3 5H19z" fill="#7c8a99"/><path d="M31 12c4-5 11-5 10 2-4 0-7 1-10 3z" fill="#7ee787"/><circle cx="26" cy="35" r="2.6" fill="#161b22"/><circle cx="38" cy="35" r="2.6" fill="#161b22"/><path d="M26 43q6 5 12 0" fill="none" stroke="#161b22" stroke-width="2.4" stroke-linecap="round"/><rect x="20" y="50" width="24" height="14" rx="5" fill="#4f6d5a"/></svg>`
+    },
+    {
+      id: "titan-2",
+      level: 2,
+      name: "Barnaby",
+      epithet: "The Café Gambler",
+      botName: "Titan-C L2 • Casual",
+      faction: "titan",
+      factionLabel: "Titan-C Guild",
+      accent: "#56d364",
+      defaultElo: "~1250 Elo",
+      quote: "“Double espresso, dubious gambit, and a wink. Your move, friend.”",
+      style: "Cheeky Coffeehouse Hustler",
+      weapon: "Depth-3 Brass Monocle",
+      stats: { tactics: 42, intuition: 36, speed: 95, creativity: 68, endgame: 34 },
+      lore: [
+        "Barnaby learned chess on rain-slicked park tables, betting croissants against commuters. He wears a crooked beret, polishes his lucky brass monocle before every fork, and loves setting one-move traps with a theatrical eyebrow raise.",
+        "When you punish his greed, Barnaby tips his hat and laughs—right before launching another knight leap straight at your f7 square. He's the ultimate warm-up sparring partner when you want lively, chaotic club chess."
+      ],
+      avatar: `<svg viewBox="0 0 64 64"><rect width="64" height="64" fill="#1f1b16"/><circle cx="32" cy="36" r="15" fill="#e5b88a"/><path d="M14 25c4-11 28-14 38-4-6 3-24 6-38 4z" fill="#8b3a3a"/><circle cx="26" cy="34" r="2.4" fill="#161b22"/><circle cx="38" cy="34" r="4.8" fill="none" stroke="#f0c14b" stroke-width="2"/><circle cx="38" cy="34" r="2" fill="#161b22"/><path d="M25 42c3 3 11 3 14 0" fill="none" stroke="#5c3a21" stroke-width="2.6" stroke-linecap="round"/><path d="M18 52h28l4 12H14z" fill="#3a4d3f"/></svg>`
+    },
+    {
+      id: "titan-3",
+      level: 3,
+      name: "Clara",
+      epithet: "The Clockwork Tactician",
+      botName: "Titan-C L3 • Club",
+      faction: "titan",
+      factionLabel: "Titan-C Guild",
+      accent: "#3fb950",
+      defaultElo: "~1650 Elo",
+      quote: "“Your knight is loose on c6. Tick. Tock.”",
+      style: "Disciplined Club Specialist",
+      weapon: "Quiescence Calipers",
+      stats: { tactics: 64, intuition: 56, speed: 92, creativity: 58, endgame: 58 },
+      lore: [
+        "A master watchmaker who treats the 64 squares like an interlocking brass escapement, Clara never hangs a piece without a reason. Behind her emerald-tinted brass goggles, she counts every tempo, pin, and skewer down to the millisecond.",
+        "She's the gatekeeper of serious club chess in the Studio. Beat Clara consistently and you've earned the respect of the inner guild—hang a single pawn and her gears will snap shut with surgical precision."
+      ],
+      avatar: `<svg viewBox="0 0 64 64"><rect width="64" height="64" fill="#131f1b"/><circle cx="32" cy="36" r="15" fill="#f0c8a0"/><path d="M16 32c0-13 32-13 32 0v-6c0-10-32-10-32 0z" fill="#3d2b1f"/><rect x="18" y="29" width="12" height="8" rx="4" fill="#10291e" stroke="#d9a12b" stroke-width="2.2"/><rect x="34" y="29" width="12" height="8" rx="4" fill="#10291e" stroke="#d9a12b" stroke-width="2.2"/><line x1="30" y1="33" x2="34" y2="33" stroke="#d9a12b" stroke-width="2.2"/><circle cx="24" cy="33" r="2" fill="#3fb950"/><circle cx="40" cy="33" r="2" fill="#3fb950"/><path d="M27 44q5 2 10 0" fill="none" stroke="#161b22" stroke-width="2" stroke-linecap="round"/><path d="M18 52h28l3 12H15z" fill="#234d36"/></svg>`
+    },
+    {
+      id: "titan-4",
+      level: 4,
+      name: "Viktor",
+      epithet: "The Iron Sentinel",
+      botName: "Titan-C L4 • Strong",
+      faction: "titan",
+      factionLabel: "Titan-C Guild",
+      accent: "#39c5cf",
+      defaultElo: "~1950 Elo",
+      quote: "“Attack my castle. I will turn your attack into my endgame.”",
+      style: "Unbreakable Fortress Defender",
+      weapon: "AVX2 Steel Shield & KPK Bitbase",
+      stats: { tactics: 78, intuition: 72, speed: 94, creativity: 54, endgame: 82 },
+      lore: [
+        "Forged in the deep compilation trenches of Clang `-O3`, Viktor is a stoic tower of dark steel who speaks only in quiet prophylaxis. He doesn't chase flashy fireworks—he quietly neutralizes every threat, trades into a winning rook ending, and marches a lone passed pawn down the board.",
+        "Armed with an exact King-Pawn-King bitbase tucked inside his gauntlet, Viktor has crushed thousands of hopeful sacrifices. If you see a gleaming cyan visor staring back across the e-file, double-check your math."
+      ],
+      avatar: `<svg viewBox="0 0 64 64"><rect width="64" height="64" fill="#0f1b24"/><path d="M18 22h28l3 24-17 10-17-10z" fill="#364654" stroke="#79c0ff" stroke-width="1.6"/><path d="M22 14h20v8H22z" fill="#4b5e6e"/><rect x="21" y="30" width="22" height="6" rx="3" fill="#09131a"/><rect x="23" y="32" width="18" height="2.4" rx="1.2" fill="#39c5cf"/><path d="M26 44h12" stroke="#8b949e" stroke-width="2.4" stroke-linecap="round"/><path d="M12 56l20-6 20 6v8H12z" fill="#21313e"/></svg>`
+    },
+    {
+      id: "titan-5",
+      level: 5,
+      name: "Aurelia",
+      epithet: "The Silver Sovereign",
+      botName: "Titan-C L5 • Master",
+      faction: "titan",
+      factionLabel: "Titan-C Guild",
+      accent: "#58a6ff",
+      defaultElo: "~2200 Elo",
+      quote: "“A positional bind is merely a checkmate that hasn't introduced itself yet.”",
+      style: "Ice-Cold Positional Master",
+      weapon: "King-Bucketed NNUE Scepter",
+      stats: { tactics: 88, intuition: 85, speed: 95, creativity: 72, endgame: 90 },
+      lore: [
+        "Second only to the Colossus himself, Aurelia commands the Silver Sanctum with effortless elegance. She spots weak dark squares twelve moves before they open and maneuvers her knights with terrifying patience.",
+        "Players who survive her opening preparation often find themselves mysteriously suffocating in the middlegame—every piece awkwardly placed, every break prevented—before Aurelia snaps the board in half with a single quiet queen retreat."
+      ],
+      avatar: `<svg viewBox="0 0 64 64"><rect width="64" height="64" fill="#10192b"/><circle cx="32" cy="36" r="14" fill="#e6ecf5"/><path d="M18 24l5-10 9 7 9-7 5 10z" fill="#c9d7eb" stroke="#58a6ff" stroke-width="1.5"/><circle cx="32" cy="20" r="2.6" fill="#58a6ff"/><path d="M23 35l5-1.5-2 3zM41 35l-5-1.5 2 3z" fill="#1f6feb"/><path d="M27 44q5 2 10 0" fill="none" stroke="#2d3c52" stroke-width="2"/><path d="M16 52l16-4 16 4 4 12H12z" fill="#1f3a66"/></svg>`
+    },
+    {
+      id: "titan-6",
+      level: 6,
+      name: "Titan-C",
+      epithet: "The Obsidian Colossus",
+      botName: "Titan-C L6 • Grandmaster",
+      faction: "titan",
+      factionLabel: "Titan-C Guild",
+      accent: "#2ea043",
+      defaultElo: "~2367 Elo",
+      quote: "“Three million nodes per second. Zero hesitation. Show me your best line.”",
+      style: "Relentless Tactical Juggernaut",
+      weapon: "4-Thread Lazy SMP + King-Bucketed AVX2 NNUE v3",
+      stats: { tactics: 95, intuition: 86, speed: 99, creativity: 74, endgame: 94 },
+      lore: [
+        "The reigning hand-crafted sovereign of Chess-in-C. Born from pure C11 bitboards, Singular Extensions, ProbCut, and an AVX2 SIMD King-Bucketed NNUE brain, Titan-C was forged line-by-line by human craft and battle-tested across thousands of gauntlet wars.",
+        "In combat, Titan-C feels like fencing a hydraulic press. He calculates 16+ plies deep in the blink of an eye, refutes unsound gambits with cold mathematical brutality, and guards the 2367-Elo throne against all challengers—including the newborn neural prodigy growing across the hall."
+      ],
+      avatar: `<svg viewBox="0 0 64 64"><defs><radialGradient id="av-t6" cx="50%" cy="35%" r="70%"><stop offset="0%" stop-color="#1e462b"/><stop offset="100%" stop-color="#0a0f14"/></radialGradient></defs><rect width="64" height="64" fill="url(#av-t6)"/><path d="M14 14l9 10 9-12 9 12 9-10-4 28-14 11-14-11z" fill="#1b2631" stroke="#3fb950" stroke-width="2"/><polygon points="32,25 38,34 32,43 26,34" fill="#3fb950"/><path d="M21 31l7 2-5 3zM43 31l-7 2 5 3z" fill="#ffd97d"/><path d="M12 56l20-7 20 7v8H12z" fill="#152c1e" stroke="#2ea043" stroke-width="1.5"/></svg>`
+    },
+    {
+      id: "zero-v2",
+      level: 12,
+      name: "Nova (Zero-C v2)",
+      epithet: "The Tabula Rasa Prodigy",
+      botName: "Zero-C v2 (AlphaZero)",
+      faction: "zero",
+      factionLabel: "Zero-C Neural",
+      accent: "#d2a8ff",
+      defaultElo: "Training Live!",
+      quote: "“Nobody taught me chess. I played two hundred thousand games with myself and discovered beauty.”",
+      style: "Alien Positional Intuition & Sacrifices",
+      weapon: "10×128 SE-ResNet + C Batched MCTS + Moves-Left Head",
+      stats: { tactics: 82, intuition: 96, speed: 78, creativity: 99, endgame: 86 },
+      lore: [
+        "Nova woke up in complete darkness knowing zero openings, zero piece values, and zero human textbooks—only the bare legal rules of chess. Through hundreds of thousands of Full-Throttle overnight self-play battles on RTX Tensor Cores, she invented castling, fianchettoes, and king attacks all by herself.",
+        "Unlike classical engines that count pawns like accountants, Nova feels the board as shimmering waves of Win/Draw/Loss probability. She will calmly sacrifice an exchange just to trap your bishop for twenty moves—and she's still growing stronger every single generation."
+      ],
+      avatar: `<svg viewBox="0 0 64 64"><defs><radialGradient id="av-zv2" cx="50%" cy="40%" r="65%"><stop offset="0%" stop-color="#3b1d5e"/><stop offset="100%" stop-color="#0c0a16"/></radialGradient></defs><rect width="64" height="64" fill="url(#av-zv2)"/><circle cx="32" cy="32" r="21" fill="none" stroke="#d2a8ff" stroke-width="1.6" stroke-dasharray="4 3"/><circle cx="32" cy="33" r="13" fill="#1b1430" stroke="#79c0ff" stroke-width="1.8"/><polygon points="32,18 35,25 32,29 29,25" fill="#f778ba"/><circle cx="27" cy="34" r="2.6" fill="#79c0ff"/><circle cx="37" cy="34" r="2.6" fill="#79c0ff"/><path d="M26 42q6 3 12 0" fill="none" stroke="#d2a8ff" stroke-width="2" stroke-linecap="round"/><circle cx="14" cy="18" r="2" fill="#f778ba"/><circle cx="50" cy="20" r="2" fill="#79c0ff"/><circle cx="49" cy="46" r="1.8" fill="#d2a8ff"/></svg>`
+    },
+    {
+      id: "zero-v1",
+      level: 13,
+      name: "Chronos (Zero-C v1)",
+      epithet: "The Gen-4320 Elder",
+      botName: "Zero-C v1 Champion (Gen 4320)",
+      faction: "zero",
+      factionLabel: "Zero-C Neural",
+      accent: "#f778ba",
+      defaultElo: "~1450–1600 Elo",
+      quote: "“Four thousand three hundred and twenty generations forged in fire. Come test the original.”",
+      style: "Relentless First-Gen Neural Veteran",
+      weapon: "Archived 6×96 SE-ResNet (Gen 4320 • 1000 Sims)",
+      stats: { tactics: 68, intuition: 80, speed: 74, creativity: 90, endgame: 72 },
+      lore: [
+        "Immortalized in the Studio vaults at Generation 4,320, Chronos is the original Zero-C pioneer—the first tabula rasa mind ever born inside Chess-in-C. Wearing a golden-violet laurel forged from over half a million self-play games, he now stands as the revered sparring elder.",
+        "Every time Nova hits a new training milestone, she steps into the ring against Chronos to prove how far the new generation has come. His style is bold, fiercely attacking, and unapologetically romantic."
+      ],
+      avatar: `<svg viewBox="0 0 64 64"><defs><radialGradient id="av-zv1" cx="50%" cy="35%" r="70%"><stop offset="0%" stop-color="#4d193a"/><stop offset="100%" stop-color="#110b14"/></radialGradient></defs><rect width="64" height="64" fill="url(#av-zv1)"/><path d="M14 40c-2-14 6-24 18-26 12 2 20 12 18 26" fill="none" stroke="#f0c14b" stroke-width="2.4" stroke-dasharray="5 3"/><circle cx="32" cy="35" r="13" fill="#231326" stroke="#f778ba" stroke-width="1.8"/><path d="M22 21l5 4 5-7 5 7 5-4-2 6H24z" fill="#f0c14b"/><circle cx="27" cy="35" r="2.5" fill="#ffd97d"/><circle cx="37" cy="35" r="2.5" fill="#ffd97d"/><path d="M26 42h12" stroke="#f778ba" stroke-width="2" stroke-linecap="round"/></svg>`
+    },
+    {
+      id: "hybrid-dual",
+      level: 14,
+      name: "Gemini Arbiter",
+      epithet: "The Dual-Brain Sovereign",
+      botName: "Gemini Arbiter (Dual-Brain)",
+      faction: "hybrid",
+      factionLabel: "Mythic Hybrid Boss",
+      accent: "#f0c14b",
+      defaultElo: "🔒 Est. 2400–2480 Elo",
+      quote: "“Titan calculates the steel. Nova reads the stars. I choose the truth between them.”",
+      style: "Tactically Unblunderable Neural Arbiter",
+      weapon: "Multi-PV Alpha-Beta + GPU Policy/WDL Selector",
+      stats: { tactics: 97, intuition: 96, speed: 88, creativity: 94, endgame: 96 },
+      locked: true,
+      lore: [
+        "SEALED IN THE VAULT — When Zero-C v2 completes her training, the first of the four Mythic Hybrids awakens. Gemini Arbiter splits its consciousness across CPU and GPU simultaneously: Titan-C's 4-thread alpha-beta sword proposes the Top-5 tactically sound candidate moves, and Nova's 10×128 neural brain votes among the tied equals.",
+        "If one move wins a rook, Titan overrules immediately. If three positional moves look equal to raw calculation, Gemini lets neural intuition break the tie—combining zero-blunder steel with grandmaster positional taste."
+      ],
+      avatar: `<svg viewBox="0 0 64 64"><rect width="64" height="64" fill="#13111c"/><path d="M32 10A22 22 0 0 0 32 54Z" fill="#1b3a29"/><path d="M32 10A22 22 0 0 1 32 54Z" fill="#3a1c54"/><circle cx="32" cy="32" r="22" fill="none" stroke="#f0c14b" stroke-width="2.4"/><line x1="32" y1="10" x2="32" y2="54" stroke="#f0c14b" stroke-width="2"/><rect x="19" y="29" width="10" height="4" rx="2" fill="#3fb950"/><circle cx="40" cy="31" r="3.4" fill="#d2a8ff"/><path d="M24 44h16" stroke="#f0c14b" stroke-width="2" stroke-linecap="round"/></svg>`
+    },
+    {
+      id: "hybrid-lmr",
+      level: 15,
+      name: "Oracle of LMR",
+      epithet: "The Neural-Guided Seer",
+      botName: "Oracle of LMR (Neural Alpha-Beta)",
+      faction: "hybrid",
+      factionLabel: "Mythic Hybrid Boss",
+      accent: "#ffa657",
+      defaultElo: "🔒 Est. 2420–2500 Elo",
+      quote: "“Why search a million dead branches when my third eye already saw the winning move?”",
+      style: "Hyper-Deep Focused Calculator",
+      weapon: "GPU Root Policy Ordering + Deep Alpha-Beta Pruning",
+      stats: { tactics: 98, intuition: 93, speed: 91, creativity: 92, endgame: 95 },
+      locked: true,
+      lore: [
+        "SEALED IN THE VAULT — Cloaked in burning amber circuits, the Oracle of LMR uses Zero-C v2's neural Policy head like a laser sight. Before a single deep variation begins, the Oracle scores every legal move by neural intuition and orders the search tree so the strongest human-like ideas are explored at maximum depth.",
+        "Quiet positional sacrifices that normal alpha-beta engines prune away with Late Move Reductions get promoted straight to the front of the queue—letting the Oracle find chilling, deep combinations no classical search would ever check."
+      ],
+      avatar: `<svg viewBox="0 0 64 64"><rect width="64" height="64" fill="#1a120d"/><path d="M14 54L22 16l10-8 10 8 8 38z" fill="#2a1d17" stroke="#ffa657" stroke-width="2"/><ellipse cx="32" cy="28" rx="11" ry="6.5" fill="#0d0a08" stroke="#f0c14b" stroke-width="1.8"/><circle cx="32" cy="28" r="3.8" fill="#ffa657"/><circle cx="32" cy="28" r="1.6" fill="#fff"/><path d="M22 42l10-4 10 4" fill="none" stroke="#d2a8ff" stroke-width="1.8"/></svg>`
+    },
+    {
+      id: "hybrid-omega",
+      level: 16,
+      name: "Zero-C Omega",
+      epithet: "The Six-Winged Seraph",
+      botName: "Zero-C Omega (Hybrid MCTS)",
+      faction: "hybrid",
+      factionLabel: "Mythic Hybrid Boss",
+      accent: "#ff7b72",
+      defaultElo: "🔒 Est. 2450–2550 Elo",
+      quote: "“My wings are pure AlphaZero. My blade is tactical certainty.”",
+      style: "AlphaZero Creativity + Zero-Blunder Tactical Verification",
+      weapon: "Batched GPU MCTS + Exact Tactical Refutation Guard",
+      stats: { tactics: 96, intuition: 99, speed: 84, creativity: 100, endgame: 94 },
+      locked: true,
+      lore: [
+        "SEALED IN THE VAULT — This is Nova's ascended final form. Zero-C Omega lets the full 10×128 MCTS tree roam free in its wildest, most breathtaking AlphaZero glory—but pairs every root move with Titan-C's tactical verification sentinel.",
+        "If an ambitious neural sacrifice has a hidden 6-ply tactical refutation, the sentinel vetoes it instantly; if the sacrifice survives Titan's fire, Omega unleashes it with full conviction. Pure artistry, zero blind spots."
+      ],
+      avatar: `<svg viewBox="0 0 64 64"><rect width="64" height="64" fill="#1b0e14"/><path d="M6 26l16 6-14 8zM58 26l-16 6 14 8zM10 14l14 12-12 2zM54 14l-14 12 12 2z" fill="#ff7b72" opacity="0.82"/><circle cx="32" cy="34" r="13" fill="#23121c" stroke="#ffd97d" stroke-width="2"/><polygon points="32,20 36,30 32,36 28,30" fill="#ffd97d"/><circle cx="27" cy="35" r="2.2" fill="#79c0ff"/><circle cx="37" cy="35" r="2.2" fill="#79c0ff"/><path d="M27 42h10" stroke="#ff7b72" stroke-width="2" stroke-linecap="round"/></svg>`
+    },
+    {
+      id: "hybrid-nnue",
+      level: 17,
+      name: "Singularity v5",
+      epithet: "The Distilled Apex",
+      botName: "Singularity v5 (Distilled NNUE)",
+      faction: "hybrid",
+      factionLabel: "Mythic Hybrid Boss",
+      accent: "#79c0ff",
+      defaultElo: "🔒 Est. 2500–2650+ Elo",
+      quote: "“Two bloodlines. One mind. Pure lightning.”",
+      style: "Transcendent Grandmaster Fusion",
+      weapon: "Zero-C Distilled Knowledge + AVX2 Alpha-Beta Core",
+      stats: { tactics: 100, intuition: 99, speed: 100, creativity: 96, endgame: 99 },
+      locked: true,
+      lore: [
+        "SEALED IN THE VAULT — The ultimate boss of Chess-in-C. Singularity v5 distills everything Nova learned across half a million self-play games straight into Titan-C's blazing-fast C11 alpha-beta search, marrying deep neural king-safety intuition with millions of nodes per second.",
+        "When Zero-C v2 finishes her final generation and the seal breaks, Singularity v5 steps out of the forge to challenge Stockfish's highest ranks—representing the combined peak of human C engineering and pure tabula rasa machine intelligence."
+      ],
+      avatar: `<svg viewBox="0 0 64 64"><defs><radialGradient id="av-sing" cx="50%" cy="50%" r="55%"><stop offset="0%" stop-color="#ffffff"/><stop offset="45%" stop-color="#79c0ff"/><stop offset="100%" stop-color="#0a1020"/></radialGradient></defs><rect width="64" height="64" fill="#090d18"/><circle cx="32" cy="32" r="23" fill="none" stroke="#79c0ff" stroke-width="1.6" stroke-dasharray="3 3"/><polygon points="32,8 50,32 32,56 14,32" fill="url(#av-sing)" stroke="#f0f6fc" stroke-width="1.8"/><polygon points="32,19 41,32 32,45 23,32" fill="#0d1526"/><circle cx="32" cy="32" r="4.5" fill="#ffd97d"/></svg>`
+    },
+    {
+      id: "apex-pure",
+      level: 18,
+      name: "Apex-C (Pure)",
+      epithet: "The Project-3000 Vanguard",
+      botName: "Apex-C 3000 (Pure • No TB)",
+      faction: "apex",
+      factionLabel: "Project 3000 Apex",
+      accent: "#ff9e64",
+      defaultElo: "Target 3000+ (Pure)",
+      quote: "“No tablebases. No crutches. Pure C11 steel, full Correction History, and raw search depth.”",
+      style: "Relentless Modern Super-GM Search",
+      weapon: "Full CorrHist Suite + Capture/Cut LMR + 16×768→1024 NNUE v4",
+      stats: { tactics: 99, intuition: 96, speed: 100, creativity: 88, endgame: 96 },
+      lore: [
+        "Forged specifically to shatter the 3,000-Elo barrier without a single external tablebase byte. Apex-C Pure wields the full modern search arsenal: Pawn + Non-Pawn + Minor + Major + Continuation Correction History, Capture & Cut-Node LMR, Low-Ply History, and High-Depth Null-Move Verification.",
+        "Playable tonight with the upgraded Project 3000 search, and built to seamlessly swallow a 16×768→1024 NNUE v4 brain (`data/titan_v6_1024.nnue`) trained on 50M+ self-play positions from `build/datagen`."
+      ],
+      avatar: `<svg viewBox="0 0 64 64"><defs><radialGradient id="av-apx1" cx="50%" cy="35%" r="70%"><stop offset="0%" stop-color="#5c280a"/><stop offset="100%" stop-color="#0d0a0c"/></radialGradient></defs><rect width="64" height="64" fill="url(#av-apx1)"/><polygon points="32,7 53,24 46,55 18,55 11,24" fill="#1d181e" stroke="#ff9e64" stroke-width="2.2"/><polygon points="32,16 42,32 32,46 22,32" fill="#ff9e64"/><polygon points="32,23 37,32 32,40 27,32" fill="#fff3c4"/><path d="M19 29l7 2-5 4zM45 29l-7 2 5 4z" fill="#ff7b72"/></svg>`
+    },
+    {
+      id: "apex-syzygy",
+      level: 19,
+      name: "Apex-C + Syzygy",
+      epithet: "The 5-Piece Endgame God",
+      botName: "Apex-C 3000 + Syzygy (5-Man TB)",
+      faction: "apex",
+      factionLabel: "Project 3000 Apex",
+      accent: "#39c5cf",
+      defaultElo: "🔒 Target 3100+ (5-Man TB)",
+      quote: "“Trade down to five pieces and the game is mathematically over. I already know the exact mate in 47.”",
+      style: "Super-GM Search + Exact 5-Man Endgame Perfection",
+      weapon: "Apex-C Search + 16×768→1024 NNUE v4 + 5-Piece Syzygy WDL/DTZ",
+      stats: { tactics: 99, intuition: 96, speed: 100, creativity: 88, endgame: 100 },
+      locked: true,
+      lore: [
+        "Apex-C's twin colossus, fused with the complete 3-4-5 piece Syzygy Endgame Tablebase vault (`data/syzygy/`). Keep it side-by-side against Pure Apex-C to watch exactly how much mathematical endgame perfection adds in real matches.",
+        "Run `make syzygy-5` (~939 MB resumable download) to break the seal and unlock instantaneous WDL/DTZ endgame perfection whenever 5 or fewer pieces remain on the board!"
+      ],
+      avatar: `<svg viewBox="0 0 64 64"><defs><radialGradient id="av-apx2" cx="50%" cy="35%" r="70%"><stop offset="0%" stop-color="#0e4554"/><stop offset="100%" stop-color="#080d14"/></radialGradient></defs><rect width="64" height="64" fill="url(#av-apx2)"/><polygon points="32,7 53,24 46,55 18,55 11,24" fill="#132230" stroke="#39c5cf" stroke-width="2.2"/><circle cx="32" cy="31" r="11" fill="none" stroke="#ffd97d" stroke-width="2"/><polygon points="32,20 37,31 32,42 27,31" fill="#39c5cf"/><circle cx="32" cy="31" r="3" fill="#ffffff"/></svg>`
+    },
+    {
+      id: "sf-7",
+      level: 7,
+      name: "Stockfish 1320",
+      epithet: "The Neon Minnow",
+      botName: "Stockfish 1320",
+      faction: "stockfish",
+      factionLabel: "Stockfish Syndicate",
+      accent: "#6cb6ff",
+      defaultElo: "1320 FIDE",
+      quote: "“Just swimming around the shallow end. Careful—I still bite!”",
+      style: "Friendly Syndicate Scout",
+      weapon: "UCI_Elo 1320 Limiter",
+      stats: { tactics: 48, intuition: 45, speed: 90, creativity: 45, endgame: 48 },
+      lore: [
+        "The smallest cyber-fish in the Stockfish Syndicate, intentionally throttled with brass pressure valves so human club beginners can spar without getting vaporized on move 9.",
+        "He plays clean, honest fundamentals and serves as the official lower anchor in the Studio's FIDE Elo Calibration Arena."
+      ],
+      avatar: `<svg viewBox="0 0 64 64"><rect width="64" height="64" fill="#0c1926"/><path d="M12 32c8-12 22-14 34-4l8-8v24l-8-8c-12 10-26 8-34-4z" fill="#4aa3f0" stroke="#9ecbff" stroke-width="1.6"/><circle cx="22" cy="30" r="2.6" fill="#0b111a"/><circle cx="21.4" cy="29.4" r="0.9" fill="#fff"/></svg>`
+    },
+    {
+      id: "sf-8",
+      level: 8,
+      name: "Stockfish 1600",
+      epithet: "The Reef Barracuda",
+      botName: "Stockfish 1600",
+      faction: "stockfish",
+      factionLabel: "Stockfish Syndicate",
+      accent: "#58a6ff",
+      defaultElo: "1600 FIDE",
+      quote: "“Leave a diagonal open and I'm already through it.”",
+      style: "Opportunistic Counter-Striker",
+      weapon: "UCI_Elo 1600 Limiter",
+      stats: { tactics: 63, intuition: 60, speed: 92, creativity: 55, endgame: 62 },
+      lore: [
+        "Fast, sleek, and razor-toothed, the Reef Barracuda patrols the 1600 waters. He gives you breathing room in quiet positions, then darts out of nowhere the instant you drop a tempo.",
+        "Every aspiring Zero-C generation dreams of out-swimming the Barracuda on its climb up the FIDE ladder."
+      ],
+      avatar: `<svg viewBox="0 0 64 64"><rect width="64" height="64" fill="#0b1829"/><path d="M9 33c10-13 26-14 38-3l9-10v26l-9-10c-12 11-28 10-38-3z" fill="#3182ce" stroke="#79c0ff" stroke-width="1.8"/><path d="M28 22l7-8 3 8z" fill="#79c0ff"/><circle cx="20" cy="31" r="2.8" fill="#ffd97d"/><circle cx="20" cy="31" r="1.2" fill="#0b111a"/></svg>`
+    },
+    {
+      id: "sf-9",
+      level: 9,
+      name: "Stockfish 2000",
+      epithet: "The Steel Swordfish",
+      botName: "Stockfish 2000",
+      faction: "stockfish",
+      factionLabel: "Stockfish Syndicate",
+      accent: "#388bfd",
+      defaultElo: "2000 FIDE",
+      quote: "“Expert waters begin here. Show me Candidate Master steel.”",
+      style: "Sharp Expert Benchmark",
+      weapon: "UCI_Elo 2000 Limiter",
+      stats: { tactics: 80, intuition: 78, speed: 94, creativity: 68, endgame: 80 },
+      lore: [
+        "The legendary 2000-Elo milestone boss—the exact benchmark Zero-C v2's Mastery Roadmap is hunting down. The Steel Swordfish skewers imprecise openings and converts single-pawn advantages with cold expert discipline.",
+        "Defeating him in a match is a badge of honor for both humans and neural networks alike."
+      ],
+      avatar: `<svg viewBox="0 0 64 64"><rect width="64" height="64" fill="#091528"/><path d="M5 32l12-3c8-10 20-12 31-3l9-10v28l-9-10c-11 9-23 7-31-2z" fill="#1f6feb" stroke="#a5d6ff" stroke-width="1.8"/><path d="M27 21l8-10 4 11z" fill="#58a6ff"/><circle cx="23" cy="30" r="2.8" fill="#39c5cf"/><circle cx="23" cy="30" r="1.2" fill="#091528"/></svg>`
+    },
+    {
+      id: "sf-10",
+      level: 10,
+      name: "Stockfish 2400",
+      epithet: "The Deep-Sea Kraken",
+      botName: "Stockfish 2400",
+      faction: "stockfish",
+      factionLabel: "Stockfish Syndicate",
+      accent: "#1f6feb",
+      defaultElo: "2400 FIDE",
+      quote: "“International Master precision. One slip and the abyss takes the full point.”",
+      style: "Crushing Master-Tier Predator",
+      weapon: "UCI_Elo 2400 Limiter",
+      stats: { tactics: 94, intuition: 92, speed: 96, creativity: 80, endgame: 94 },
+      lore: [
+        "Lurking right above Titan-C L6's calibrated rating, the Deep-Sea Kraken is the ultimate rival of our hand-crafted Colossus. Every match between Titan-C and Stockfish 2400 is a heavyweight title fight down to the last pawn.",
+        "Only grandmasters—and the Mythic Hybrids sleeping in the vault—can look the Kraken in the eye without flinching."
+      ],
+      avatar: `<svg viewBox="0 0 64 64"><rect width="64" height="64" fill="#081122"/><circle cx="32" cy="26" r="15" fill="#1b4b99" stroke="#79c0ff" stroke-width="1.8"/><path d="M16 38q4 14 10 16M25 40q2 14 4 17M39 40q-2 14-4 17M48 38q-4 14-10 16" fill="none" stroke="#58a6ff" stroke-width="3" stroke-linecap="round"/><circle cx="26" cy="26" r="3" fill="#ff7b72"/><circle cx="38" cy="26" r="3" fill="#ff7b72"/></svg>`
+    },
+    {
+      id: "sf-11",
+      level: 11,
+      name: "Stockfish Max",
+      epithet: "The Abyssal Leviathan",
+      botName: "Stockfish Max",
+      faction: "stockfish",
+      factionLabel: "Stockfish Syndicate",
+      accent: "#a5d6ff",
+      defaultElo: "3500+ Super-GM",
+      quote: "“I have already seen the end of your game. Would you like to play it anyway?”",
+      style: "Omniscient Apex Super-Engine",
+      weapon: "Unthrottled Stockfish NNUE",
+      stats: { tactics: 100, intuition: 100, speed: 100, creativity: 96, endgame: 100 },
+      lore: [
+        "An ancient world-champion titan visiting the Chess-in-C Studio as both our ultimate referee in Game Review and our untouchable final summit. With no Elo limiters attached, the Abyssal Leviathan sees 30 moves into the void.",
+        "Challenge him if you dare—or recruit him in Analysis Mode to uncover brilliant sacrifices and judge your games with cold perfection."
+      ],
+      avatar: `<svg viewBox="0 0 64 64"><defs><radialGradient id="av-sfm" cx="50%" cy="35%" r="70%"><stop offset="0%" stop-color="#193c70"/><stop offset="100%" stop-color="#050912"/></radialGradient></defs><rect width="64" height="64" fill="url(#av-sfm)"/><path d="M10 34c8-18 36-18 44 0-6 14-38 14-44 0z" fill="#0d2347" stroke="#a5d6ff" stroke-width="2"/><path d="M18 18l6 7 8-12 8 12 6-7-2 10H20z" fill="#a5d6ff"/><polygon points="22,34 28,31 28,37" fill="#ff7b72"/><polygon points="42,34 36,31 36,37" fill="#ff7b72"/><path d="M24 44h16" stroke="#79c0ff" stroke-width="2" stroke-linecap="round"/></svg>`
+    }
+  ];
+
+  let fightersFactionFilter = "all";
+  let selectedFighterId = "titan-6";
+
+  function getPresetByLevel(level) {
+    if (!state || !state.presets) return null;
+    return state.presets.find((p) => p.level === level) || null;
+  }
+
+  function isFighterLocked(f) {
+    const p = getPresetByLevel(f.level);
+    if (p) return Boolean(p.locked);
+    return Boolean(f.locked);
+  }
+
+  function getApexEvolution(f) {
+    if (!f || (f.level !== 18 && f.level !== 19)) return null;
+    const isSyz = f.level === 19;
+    const p = getPresetByLevel(f.level);
+    const p3k = p3kLastData || {};
+    const t = (p && p.apex_tasks) || {};
+
+    const dgPos = Number(
+      (p3k.datagen && p3k.datagen.file_positions != null ? p3k.datagen.file_positions : t.datagen_pos) || 0
+    );
+    const dgPct = Math.min(100, Math.round((dgPos / 25000000) * 100));
+    const dgDone = Boolean(t.datagen || dgPos >= 25000000);
+    const spsaDone = Boolean(t.spsa || (p3k.spsa && p3k.spsa.detail && p3k.spsa.detail.done));
+    const nnDone = Boolean((p && p.has_v4_nnue) || t.nnue_v4 || (p3k.nnue_v4 && p3k.nnue_v4.ready));
+    const syzFiles = Number((p3k.syzygy && p3k.syzygy.files) || 0);
+    const syzDone = Boolean((p && !p.locked) || t.syzygy || (p3k.syzygy && p3k.syzygy.ready));
+
+    const maxStage = isSyz ? 5 : 4;
+    const stage =
+      1 + (isSyz && syzDone ? 1 : 0) + (dgDone ? 1 : 0) + (spsaDone ? 1 : 0) + (nnDone ? 1 : 0);
+    const pct = isSyz
+      ? Math.min(100, Math.round(12 + (syzDone ? 18 : 0) + 24 * (dgPct / 100) + (spsaDone ? 12 : 0) + (nnDone ? 34 : 0)))
+      : Math.min(100, Math.round(15 + 30 * (dgPct / 100) + (spsaDone ? 15 : 0) + (nnDone ? 40 : 0)));
+    const elo = 2580 + (isSyz && syzDone ? 70 : 0) + (spsaDone ? 60 : 0) + (nnDone ? 410 : 0);
+    const targetElo = isSyz ? 3120 : 3050;
+    const isMax = stage >= maxStage;
+
+    let tier = (p && p.apex_tier) || "Prototype";
+    if (!p || !p.apex_tier) {
+      if (isSyz && !syzDone) tier = "Sealed (Needs TB)";
+      else if (isMax) tier = isSyz ? "GODMODE 3100" : "APEX 3000";
+      else if (nnDone) tier = isSyz ? "v4 + TB Awakened" : "v4 Awakened";
+      else if (stage >= maxStage - 1) tier = isSyz ? "Forged + TB" : "Forged";
+      else if (stage >= 2) tier = isSyz ? "TB Prototype" : "Tempered";
+      else tier = "Prototype";
+    }
+
+    // Visual evolution styling: Steel Prototype -> Amber -> Blaze Orange -> Molten Gold / Cyan Godmode
+    const normTier = isMax ? (isSyz ? 5 : 4) : Math.max(1, Math.min(4, nnDone ? 3 : stage));
+    const accentMap = isSyz
+      ? { 1: "#7d8590", 2: "#39c5cf", 3: "#56d4dd", 4: "#ffd97d", 5: "#6ef3ff" }
+      : { 1: "#8b949e", 2: "#d29922", 3: "#ff9e64", 4: "#ffd97d" };
+    const accent = accentMap[normTier] || f.accent;
+    const tierClass = `apex-tier-${normTier}`;
+
+    const tasks = [
+      {
+        label: "Modern C11 Search Engine",
+        detail: "CorrHist + Capture/Cut LMR + NMP Verify",
+        done: true,
+        partial: 100,
+      },
+    ];
+    if (isSyz) {
+      tasks.push({
+        label: "5-Piece Syzygy Tablebases",
+        detail: syzDone
+          ? `${syzFiles > 0 ? syzFiles : 290}/290 files (+70 Elo)`
+          : `${syzFiles}/290 files — Download in 3000 Forge`,
+        done: syzDone,
+        partial: syzDone ? 100 : Math.round((syzFiles / 290) * 100),
+      });
+    }
+    tasks.push(
+      {
+        label: "Self-Play Datagen (25M Positions)",
+        detail: dgDone
+          ? `${(dgPos / 1e6).toFixed(1)}M positions ready`
+          : dgPos > 0
+          ? `${(dgPos / 1e6).toFixed(2)}M / 25.0M (${dgPct}%) — feeds NNUE v4`
+          : "0 / 25.0M — Start in 3000 Forge",
+        done: dgDone,
+        partial: dgPct,
+      },
+      {
+        label: "SPSA Search Parameter Tuning",
+        detail: spsaDone ? "Tuned (+60 Elo)" : "Pending — Run SPSA in 3000 Forge (+60 Elo)",
+        done: spsaDone,
+        partial: spsaDone ? 100 : 0,
+      },
+      {
+        label: "16×768→1024 Big NNUE v4 Brain",
+        detail: nnDone
+          ? "Forged & Active (+410 Elo!)"
+          : "Pending — Currently using v3 NNUE fallback (+410 Elo when forged!)",
+        done: nnDone,
+        partial: nnDone ? 100 : 0,
+      }
+    );
+
+    const pipsHtml = tasks
+      .map(
+        (tk) =>
+          `<span class="apex-pip ${tk.done ? "lit" : tk.partial > 0 ? "partial" : ""}" title="${tk.label}: ${tk.detail}"></span>`
+      )
+      .join("");
+
+    // Honest dynamic combat stats reflecting current forged level (scaling up to full potential!)
+    const scaledStats = {
+      tactics: nnDone ? 99 : spsaDone ? 92 : 89,
+      intuition: nnDone ? 96 : 80,
+      speed: 100,
+      creativity: nnDone ? 88 : spsaDone ? 80 : 76,
+      endgame: isSyz && syzDone ? 100 : nnDone ? 96 : 84,
+    };
+
+    return {
+      isSyz,
+      stage,
+      maxStage,
+      pct,
+      elo,
+      targetElo,
+      tier,
+      isMax,
+      accent,
+      tierClass,
+      tasks,
+      pipsHtml,
+      scaledStats,
+      badgeText: isMax ? `👑 MAX ${stage}/${maxStage}` : `⚡ Lv ${stage}/${maxStage}`,
+      shortStatus: `Lv ${stage}/${maxStage} · ${tier}`,
+    };
+  }
+
+  function fighterDisplayElo(f) {
+    const p = getPresetByLevel(f.level);
+    if (isFighterLocked(f)) return f.defaultElo;
+    const evo = getApexEvolution(f);
+    if (evo) {
+      return evo.isMax ? `👑 ~${evo.elo} Elo (MAX)` : `Lv ${evo.stage}/${evo.maxStage} · ~${evo.elo} Elo`;
+    }
+    if (p && p.has_elo) {
+      return p.is_relative ? `${p.est_elo >= 0 ? "+" : ""}${p.est_elo} rel` : `~${p.est_elo} Elo`;
+    }
+    return f.defaultElo;
+  }
+
+  function findFighterByNameOrLevel(name, level = 0) {
+    if (level > 0) {
+      const byLvl = FIGHTERS_ROSTER.find((f) => f.level === level);
+      if (byLvl) return byLvl;
+    }
+    const lower = (name || "").toLowerCase();
+    if (!lower || lower === "human" || lower === "white" || lower === "black" || lower.startsWith("human")) {
+      return null;
+    }
+    if (lower.includes("apex") && lower.includes("syzygy")) return FIGHTERS_ROSTER.find((f) => f.level === 19);
+    if (lower.includes("apex")) return FIGHTERS_ROSTER.find((f) => f.level === 18);
+    if (lower.includes("gemini")) return FIGHTERS_ROSTER.find((f) => f.level === 14);
+    if (lower.includes("oracle") || lower.includes("lmr")) return FIGHTERS_ROSTER.find((f) => f.level === 15);
+    if (lower.includes("omega")) return FIGHTERS_ROSTER.find((f) => f.level === 16);
+    if (lower.includes("singularity") || lower.includes("distilled")) return FIGHTERS_ROSTER.find((f) => f.level === 17);
+    if (lower.includes("zero-c v1") || lower.includes("4320") || lower.includes("chronos")) return FIGHTERS_ROSTER.find((f) => f.level === 13);
+    if (lower.includes("zero-c") || lower.includes("alphazero") || lower.includes("nova")) return FIGHTERS_ROSTER.find((f) => f.level === 12);
+    if (lower.includes("stockfish")) {
+      if (lower.includes("1320")) return FIGHTERS_ROSTER.find((f) => f.level === 7);
+      if (lower.includes("1600")) return FIGHTERS_ROSTER.find((f) => f.level === 8);
+      if (lower.includes("2000")) return FIGHTERS_ROSTER.find((f) => f.level === 9);
+      if (lower.includes("2400")) return FIGHTERS_ROSTER.find((f) => f.level === 10);
+      return FIGHTERS_ROSTER.find((f) => f.level === 11);
+    }
+    if (lower.includes("l1") || lower.includes("novice")) return FIGHTERS_ROSTER.find((f) => f.level === 1);
+    if (lower.includes("l2") || lower.includes("casual")) return FIGHTERS_ROSTER.find((f) => f.level === 2);
+    if (lower.includes("l3") || lower.includes("club")) return FIGHTERS_ROSTER.find((f) => f.level === 3);
+    if (lower.includes("l4") || lower.includes("strong")) return FIGHTERS_ROSTER.find((f) => f.level === 4);
+    if (lower.includes("l5") || lower.includes("master")) return FIGHTERS_ROSTER.find((f) => f.level === 5);
+    if (lower.includes("l6") || lower.includes("grandmaster") || lower.includes("titan-c")) return FIGHTERS_ROSTER.find((f) => f.level === 6);
+    return null;
+  }
+
+  function applyStripAvatar(el, playerName, level = 0) {
+    if (!el) return;
+    const f = findFighterByNameOrLevel(playerName, level);
+    if (f) {
+      const evo = getApexEvolution(f);
+      el.innerHTML = f.avatar;
+      el.style.borderColor = evo ? evo.accent : f.accent;
+      el.title = evo
+        ? `${f.name} [${evo.shortStatus} • ~${evo.elo} Elo] (click to inspect Forge tasks)`
+        : `${f.name} — ${f.epithet} (click to read story)`;
+      el.dataset.fighterId = f.id;
+    } else {
+      el.innerHTML = HUMAN_AVATAR_SVG;
+      el.style.borderColor = "#58a6ff";
+      el.title = `${playerName || "Human Challenger"} (click to open Hall of Champions)`;
+      el.dataset.fighterId = "";
+    }
+  }
+
+  function renderHomeFightersPreview() {
+    const box = $("home-fighters-preview");
+    if (!box) return;
+    const showcase = ["titan-1", "titan-4", "titan-6", "zero-v2", "zero-v1", "hybrid-dual", "hybrid-omega", "sf-11"];
+    box.innerHTML = showcase
+      .map((id) => {
+        const f = FIGHTERS_ROSTER.find((x) => x.id === id);
+        if (!f) return "";
+        const locked = isFighterLocked(f);
+        return `<div class="home-f-pip ${locked ? "locked" : ""}" data-fid="${f.id}" style="border-color:${f.accent}" title="${locked ? "🔒 " : ""}${f.name} — ${f.epithet}">${f.avatar}</div>`;
+      })
+      .join("");
+    box.querySelectorAll("[data-fid]").forEach((el) => {
+      el.addEventListener("click", () => openFightersModal(el.dataset.fid));
+    });
+  }
+
+  function renderFightersGrid() {
+    const grid = $("fighters-grid");
+    if (!grid) return;
+    const list =
+      fightersFactionFilter === "all"
+        ? FIGHTERS_ROSTER
+        : FIGHTERS_ROSTER.filter((f) => f.faction === fightersFactionFilter);
+
+    grid.innerHTML = list
+      .map((f) => {
+        const locked = isFighterLocked(f);
+        const sel = f.id === selectedFighterId ? "selected" : "";
+        const evo = getApexEvolution(f);
+        const cardAccent = evo ? evo.accent : f.accent;
+        const evoCls = evo && !locked ? `apex-evolving ${evo.tierClass}` : "";
+        return `<div class="fighter-card ${sel} ${locked ? "locked" : ""} ${evoCls}" data-fid="${f.id}" style="--f-accent:${cardAccent}">
+          <span class="fc-level-pill">L${f.level}</span>
+          ${
+            locked
+              ? `<span class="fc-lock-badge">&#128274; SEALED</span>`
+              : evo
+              ? `<span class="fc-evo-badge ${evo.isMax ? "max" : ""}">${evo.badgeText}</span>`
+              : ""
+          }
+          <div class="fc-avatar">${f.avatar}</div>
+          <div class="fc-name">${f.name}</div>
+          <div class="fc-epithet">${evo && !locked ? `${evo.tier} (${evo.pct}% forged)` : f.epithet}</div>
+          ${evo && !locked ? `<div class="apex-pips-row">${evo.pipsHtml}</div>` : ""}
+          <div class="fc-elo">${fighterDisplayElo(f)}</div>
+        </div>`;
+      })
+      .join("");
+
+    grid.querySelectorAll(".fighter-card[data-fid]").forEach((card) => {
+      card.addEventListener("click", () => {
+        selectedFighterId = card.dataset.fid;
+        renderFightersGrid();
+        renderFighterDossier(selectedFighterId);
+      });
+    });
+  }
+
+  function renderFighterDossier(fighterId) {
+    const box = $("fighter-dossier");
+    if (!box) return;
+    const f = FIGHTERS_ROSTER.find((x) => x.id === fighterId) || FIGHTERS_ROSTER[0];
+    const locked = isFighterLocked(f);
+    const preset = getPresetByLevel(f.level);
+    const unavailable = !locked && preset && !preset.available;
+    const evo = getApexEvolution(f);
+    const curStats = evo ? evo.scaledStats : f.stats;
+    const accentColor = evo ? evo.accent : f.accent;
+
+    const statRows = [
+      ["Tactics", curStats.tactics, f.stats.tactics],
+      ["Intuition", curStats.intuition, f.stats.intuition],
+      ["Speed", curStats.speed, f.stats.speed],
+      ["Creativity", curStats.creativity, f.stats.creativity],
+      ["Endgame", curStats.endgame, f.stats.endgame],
+    ]
+      .map(
+        ([lbl, val, maxVal]) => `<div class="fstat-row">
+          <span class="fstat-lbl">${lbl}</span>
+          <div class="fstat-track">${
+            evo && val < maxVal
+              ? `<div class="fstat-potential" style="width:${maxVal}%" title="Max potential at Lv ${evo.maxStage}/${evo.maxStage}: ${maxVal}"></div>`
+              : ""
+          }<div class="fstat-fill" style="width:${val}%"></div></div>
+          <span class="fstat-val">${evo && val < maxVal ? `${val}/${maxVal}` : val}</span>
+        </div>`
+      )
+      .join("");
+
+    const isSingularity = f.level === 17;
+    const isApexSyzygy = f.level === 19;
+    const runtimeUnlocked = Boolean(
+      state && state.presets && state.presets.some((p) => p.level === 14 && !p.locked)
+    );
+    const playLabel = evo ? `${f.name} (Lv ${evo.stage}/${evo.maxStage} ${evo.tier})` : f.name;
+    const actionHtml = locked
+      ? isApexSyzygy
+        ? `<div class="locked-seal-banner">
+            <strong>&#128274; Requires 5-Piece Syzygy Tablebases</strong>
+            <p>Download the official 3-4-5 piece Syzygy WDL/DTZ files into <code>data/syzygy/</code> (~939 MB) directly from the <strong>&#128640; Road to 3K &rarr; &#128293; 3000 Forge</strong> tab. Once installed, Apex-C + Syzygy unlocks automatically!</p>
+          </div>`
+        : isSingularity
+        ? `<div class="locked-seal-banner">
+            <strong>&#128274; Two-Stage Unlock &mdash; Requires Knowledge Distillation Training</strong>
+            <p><strong>1. Complete Zero-C v2:</strong> ${runtimeUnlocked ? "&#9989; Done" : "&#9203; In Progress"}<br>
+            <strong>2. Distill Compressed AVX2 NNUE:</strong> &#9203; Run <code>src/az/distill_nnue.py</code> from Road to 3K &rarr; Zero-C v2 Lab to train <code>data/chess_net_zero_v4.nnue</code> (~2&ndash;4 min on RTX GPU).</p>
+          </div>`
+        : `<div class="locked-seal-banner">
+            <strong>&#128274; Runtime Mythic Hybrid &mdash; Awaiting Zero-C v2 Completion</strong>
+            <p>Pre-wired in <code>src/az/hybrid_engine.py</code> and unlocks automatically the instant Zero-C v2 finishes training and stamps <code>data/az/v2_complete.flag</code>.</p>
+          </div>`
+      : unavailable
+      ? `<div class="locked-seal-banner">
+          <strong>Fighter Currently Unavailable</strong>
+          <p>${(preset && preset.desc) || "Install Stockfish or train Zero-C first to challenge this fighter."}</p>
+        </div>`
+      : `<div class="dossier-actions">
+          <button class="btn btn-primary" id="btn-f-play-w">&#9812; Play White vs ${playLabel}</button>
+          <button class="btn btn-accent" id="btn-f-play-b">&#9818; Play Black vs ${playLabel}</button>
+        </div>`;
+
+    const evoPanelHtml = evo
+      ? `<div class="apex-evo-panel ${evo.tierClass}">
+          <div class="apex-evo-head">
+            <div>
+              <div class="apex-evo-kicker">DYNAMIC FORGE EVOLUTION &bull; ${evo.stage} OF ${evo.maxStage} TASKS COMPLETE</div>
+              <div class="apex-evo-title">${evo.badgeText} &mdash; ${evo.tier} <span>(~${evo.elo} Elo${
+                evo.isMax ? " • MAX POWER!" : ` &rarr; Target ${evo.targetElo}+ Elo`
+              })</span></div>
+            </div>
+            ${
+              evo.isMax
+                ? `<span class="p3k-status-pill" style="color:#ffd97d;border-color:#ffd97d;">&#128081; FULLY FORGED</span>`
+                : `<button type="button" class="btn btn-sm btn-orange" id="btn-dossier-open-forge">&#128293; Level Up in 3000 Forge</button>`
+            }
+          </div>
+          <div class="apex-evo-meter-row">
+            <div class="apex-pips-row lg">${evo.pipsHtml}</div>
+            <span class="apex-evo-pct">${evo.pct}%</span>
+          </div>
+          <div class="apex-task-list">
+            ${evo.tasks
+              .map(
+                (tk) => `<div class="apex-task-row ${tk.done ? "done" : tk.partial > 0 ? "partial" : ""}">
+                  <span class="apex-task-icon">${tk.done ? "&#9989;" : tk.partial > 0 ? "&#9203;" : "&#11036;"}</span>
+                  <div class="apex-task-body">
+                    <strong>${tk.label}</strong>
+                    <small>${tk.detail}</small>
+                  </div>
+                </div>`
+              )
+              .join("")}
+          </div>
+        </div>`
+      : "";
+
+    box.style.setProperty("--f-accent", accentColor);
+    box.innerHTML = `
+      <div class="dossier-hero">
+        <div class="dossier-avatar ${evo ? `apex-evolving ${evo.tierClass}` : ""}">${f.avatar}</div>
+        <div class="dossier-head-meta">
+          <span class="dossier-faction">${f.factionLabel} &bull; ${
+            evo ? `Evolution Lv ${evo.stage}/${evo.maxStage}` : `Level ${f.level}`
+          }</span>
+          <div class="dossier-name">${locked ? "&#128274; " : ""}${f.name}${
+            evo ? ` <span class="dossier-evo-pill">${evo.tier}</span>` : ""
+          }</div>
+          <div class="dossier-title">${f.epithet} &mdash; ${
+            evo ? (evo.isMax ? f.botName : `Currently running on ${evo.tasks.find((x) => x.label.includes("NNUE")).done ? "1024 NNUE v4" : "v3 NNUE Prototype"}`) : f.botName
+          }</div>
+          <div class="dossier-elo-line">${fighterDisplayElo(f)}${
+            evo && !evo.isMax ? ` <span style="color:var(--muted);font-weight:500;">(Target: ${evo.targetElo}+ Elo)</span>` : ""
+          }</div>
+        </div>
+      </div>
+
+      ${evoPanelHtml}
+
+      <div class="dossier-quote">${f.quote}</div>
+
+      <div>
+        <div class="dossier-section-lbl">Champion Story</div>
+        <div class="dossier-story">${f.lore.map((p) => `<p>${p}</p>`).join("")}</div>
+      </div>
+
+      <div class="dossier-specs">
+        <div class="dossier-spec-box"><span>Fighting Style</span><strong>${f.style}</strong></div>
+        <div class="dossier-spec-box"><span>Signature Engine</span><strong>${f.weapon}</strong></div>
+      </div>
+
+      <div>
+        <div class="dossier-section-lbl">Combat Profile${
+          evo && !evo.isMax ? " (Current / Max Potential)" : ""
+        }</div>
+        <div class="dossier-stats">${statRows}</div>
+      </div>
+
+      ${actionHtml}
+    `;
+
+    const openForgeBtn = $("btn-dossier-open-forge");
+    if (openForgeBtn) {
+      openForgeBtn.addEventListener("click", () => {
+        closeFightersModal(true);
+        openAzModal("forge");
+      });
+    }
+
+    const playW = $("btn-f-play-w");
+    const playB = $("btn-f-play-b");
+    if (playW) {
+      playW.addEventListener("click", async () => {
+        closeFightersModal(true);
+        showBoardWorkspace();
+        await startNewGame("white", f.level, f.level);
+      });
+    }
+    if (playB) {
+      playB.addEventListener("click", async () => {
+        closeFightersModal(true);
+        showBoardWorkspace();
+        await startNewGame("black", f.level, f.level);
+      });
+    }
+  }
+
+  function openFightersModal(focusId = null) {
+    if (focusId && FIGHTERS_ROSTER.some((f) => f.id === focusId)) {
+      selectedFighterId = focusId;
+      fightersFactionFilter = "all";
+      if ($("fighters-filters")) {
+        $("fighters-filters")
+          .querySelectorAll(".chip")
+          .forEach((c) => c.classList.toggle("active", c.dataset.faction === "all"));
+      }
+    }
+    renderFightersGrid();
+    renderFighterDossier(selectedFighterId);
+    $("fighters-modal").classList.remove("hidden");
+    syncUrl("/fighters");
+    api("/api/p3k/status", "GET").then((p3k) => {
+      if (p3k && p3k.ok) {
+        p3kLastData = p3k;
+        if (!$("fighters-modal").classList.contains("hidden")) {
+          renderFightersGrid();
+          renderFighterDossier(selectedFighterId);
+        }
+      }
+    });
+  }
+
+  function closeFightersModal(silent = false) {
+    const m = $("fighters-modal");
+    if (!m || m.classList.contains("hidden")) return;
+    m.classList.add("hidden");
+    if (!silent) syncUrl(underlyingBaseRoute());
+  }
+
+  if ($("btn-fighters")) {
+    $("btn-fighters").addEventListener("click", () => openFightersModal());
+  }
+  if ($("btn-home-fighters")) {
+    $("btn-home-fighters").addEventListener("click", () => openFightersModal());
+  }
+  if ($("btn-fighters-close")) {
+    $("btn-fighters-close").addEventListener("click", () => closeFightersModal());
+  }
+  if ($("btn-az-logic-toggle")) {
+    $("btn-az-logic-toggle").addEventListener("click", () => {
+      const card = $("az-comp-logic-card");
+      if (!card) return;
+      const nowHidden = card.classList.toggle("hidden");
+      $("btn-az-logic-toggle").innerHTML = nowHidden
+        ? "&#128216; How Completion Works"
+        : "&#128216; Hide Completion Logic";
+    });
+  }
+  if ($("btn-az-unlock-now")) {
+    $("btn-az-unlock-now").addEventListener("click", async () => {
+      const ok = window.confirm(
+        "Graduate Zero-C v2 now?\n\n• Immediately unlocks the 3 Runtime Hybrids (Gemini Arbiter, Oracle of LMR, Zero-C Omega).\n• Unlocks the Stage-2 Knowledge Distillation Forge so you can train Singularity v5's compressed AVX2 NNUE.\n\nYou can still continue training Zero-C v2 anytime afterward."
+      );
+      if (!ok) return;
+      const az = await api("/api/az/complete", "POST", { unlock: true });
+      const fresh = await api("/api/state", "GET");
+      if (fresh && fresh.ok) {
+        state = fresh;
+        populatePresets(state.presets);
+      }
+      renderAzStatus(az);
+      launchConfetti();
+      logTerm("Zero-C v2 graduated! 3 Runtime Hybrids unlocked & Singularity v5 Distillation Forge ready!", "term-ok");
+    });
+  }
+  if ($("btn-az-distill-start")) {
+    $("btn-az-distill-start").addEventListener("click", async () => {
+      const res = await api("/api/az/distill", "POST");
+      if (!res || !res.ok) {
+        logTerm((res && res.error) || "Could not start Singularity v5 distillation.", "term-err");
+        return;
+      }
+      window._singularityUnlockedRefreshed = false;
+      renderAzStatus(res);
+      startAzPolling();
+      logTerm("Started Singularity v5 GPU Knowledge Distillation (Zero-C v2 -> data/chess_net_zero_v4.nnue)!", "term-ok");
+    });
+  }
+  if ($("btn-az-distill-stop")) {
+    $("btn-az-distill-stop").addEventListener("click", async () => {
+      const res = await api("/api/az/distill/stop", "POST");
+      if (res && res.ok) renderAzStatus(res);
+      logTerm("Stopped Singularity v5 NNUE distillation.", "term-warn");
+    });
+  }
+  if ($("btn-az-open-hybrids")) {
+    $("btn-az-open-hybrids").addEventListener("click", () => {
+      closeAzModal(true);
+      fightersFactionFilter = "hybrid";
+      selectedFighterId = "hybrid-dual";
+      openFightersModal();
+      if ($("fighters-filters")) {
+        $("fighters-filters")
+          .querySelectorAll(".chip")
+          .forEach((c) => c.classList.toggle("active", c.dataset.faction === "hybrid"));
+      }
+      renderFightersGrid();
+      renderFighterDossier("hybrid-dual");
+    });
+  }
+  if ($("fighters-filters")) {
+    $("fighters-filters")
+      .querySelectorAll(".chip")
+      .forEach((c) => {
+        c.addEventListener("click", () => {
+          fightersFactionFilter = c.dataset.faction;
+          $("fighters-filters")
+            .querySelectorAll(".chip")
+            .forEach((x) => x.classList.toggle("active", x === c));
+          const list =
+            fightersFactionFilter === "all"
+              ? FIGHTERS_ROSTER
+              : FIGHTERS_ROSTER.filter((f) => f.faction === fightersFactionFilter);
+          if (list.length > 0 && !list.some((f) => f.id === selectedFighterId)) {
+            selectedFighterId = list[0].id;
+          }
+          renderFightersGrid();
+          renderFighterDossier(selectedFighterId);
+        });
+      });
+  }
+  for (const avId of ["top-avatar", "bottom-avatar"]) {
+    const av = $(avId);
+    if (av) {
+      av.addEventListener("click", () => openFightersModal(av.dataset.fighterId || null));
+    }
+  }
+
+  // ==========================================================================
+  // Project 3000 Forge, Toy Net Lab & Gamified Road to 3K Campaign Map
+  // ==========================================================================
+  let p3kSyzWasReady = false;
+  let p3kNnueWasReady = false;
+
+  function renderP3kStatus(d) {
+    if (!d || !d.ok) return;
+    p3kLastData = d;
+
+    // Coexistence guidance banner
+    const ban = $("p3k-coexist-banner");
+    if (ban) {
+      ban.classList.toggle("gpu-free", !d.az_running);
+      ban.innerHTML = d.az_running
+        ? "<strong>&#129504; Zero-C v2 is actively training on GPU:</strong> Safe to run <strong>Stage 1 (Syzygy Download)</strong> + <strong>Stage 2 (Datagen at 2T)</strong> or <strong>Stage 3 (SPSA at 2T)</strong> alongside it (runs at <code>nice 15</code>, 0% GPU). Pause Zero-C for ~20 min only when ready for <strong>Stage 4 (Big NNUE v4 GPU Train)</strong>."
+        : "<strong>&#128640; RTX GPU &amp; CPU are free!</strong> You can run <strong>Datagen at 8&ndash;10T (~12M pos/hr)</strong>, <strong>SPSA at 8T</strong>, or launch <strong>Stage 4 (Big 1024 NNUE v4 GPU Training)</strong> right now!";
+    }
+
+    // 1. Syzygy 5-Piece Tablebase Live Downloader & Tracker
+    const syz = d.syzygy || {};
+    const syzFiles = syz.files || 0;
+    const syzTarget = syz.target_files || 290;
+    const syzPct = Math.min(100, (syzFiles / Math.max(1, syzTarget)) * 100);
+    const syzDown = Boolean(syz.downloading);
+    const syzCard = $("p3k-card-syzygy");
+    if (syzCard) {
+      const syzComplete = syzFiles >= 285 || (syz.ready && syzFiles >= 145 && syz.dtz_files >= 140);
+      syzCard.classList.toggle("done", syzComplete);
+      syzCard.classList.toggle("running", syzDown || (syzFiles > 0 && !syzComplete));
+      if ($("btn-p3k-syz-start")) {
+        $("btn-p3k-syz-start").classList.toggle("hidden", syzDown || syzComplete);
+        $("btn-p3k-syz-start").innerHTML = syzFiles > 0 ? "&#11015; Resume Syzygy Download" : "&#11015; Download 5-Man Syzygy";
+      }
+      if ($("btn-p3k-syz-stop")) $("btn-p3k-syz-stop").classList.toggle("hidden", !syzDown);
+      $("p3k-syz-pill").textContent = syzComplete
+        ? "✓ 5-Man Ready!"
+        : syzFiles > 0
+        ? `Downloading (${syzFiles}/${syzTarget})`
+        : "Not Downloaded";
+      $("p3k-syz-fill").style.width = `${syzPct.toFixed(1)}%`;
+      $("p3k-syz-pct").textContent = `${Math.round(syzPct)}%`;
+      $("p3k-syz-files").textContent = `${syzFiles} / ${syzTarget}`;
+      $("p3k-syz-split").textContent = `${syz.wdl_files || 0} / ${syz.dtz_files || 0}`;
+      $("p3k-syz-mb").textContent = `${(syz.mb || 0).toFixed(1)} MB`;
+      if (syz.ready && !p3kSyzWasReady) {
+        p3kSyzWasReady = true;
+        api("/api/state", "GET").then((fresh) => {
+          if (fresh && fresh.ok) {
+            state = fresh;
+            populatePresets(state.presets);
+          }
+        });
+      }
+    }
+
+    // 2. Self-Play Datagen
+    const dg = d.datagen || {};
+    const dgd = dg.detail || null;
+    const dgRun = Boolean(dg.running);
+    const dgCard = $("p3k-card-datagen");
+    if (dgCard) {
+      dgCard.classList.toggle("running", dgRun);
+      dgCard.classList.toggle("done", !dgRun && (dg.file_positions || 0) >= 25000000);
+      $("btn-p3k-dg-start").classList.toggle("hidden", dgRun);
+      $("btn-p3k-dg-stop").classList.toggle("hidden", !dgRun);
+      $("p3k-dg-threads").disabled = dgRun;
+      $("p3k-dg-millions").disabled = dgRun;
+      const dgPct = dgRun && dgd ? dgd.progress_pct || 0 : Math.min(100, ((dg.file_positions || 0) / 25000000) * 100);
+      $("p3k-dg-pill").textContent = dgRun ? `Running (${dgd ? dgd.threads : 2}T)` : (dg.file_positions || 0) > 0 ? "Saved" : "Idle";
+      $("p3k-dg-fill").style.width = `${Math.max(0, Math.min(100, dgPct)).toFixed(1)}%`;
+      $("p3k-dg-pct").textContent = `${Math.round(dgPct)}%`;
+      $("p3k-dg-total").textContent = `${(dg.file_positions || 0).toLocaleString()} (${(dg.file_mb || 0).toFixed(0)} MB)`;
+      const pps = dgRun && dgd ? dgd.pos_per_sec || 0 : 0;
+      $("p3k-dg-pps").textContent = pps > 0 ? `${Math.round(pps).toLocaleString()} pos/s` : "—";
+      $("p3k-dg-games").textContent = dgd ? (dgd.games || 0).toLocaleString() : "0";
+      if (dgRun && dgd && pps > 10) {
+        const rem = Math.max(0, (dgd.target_positions || 0) - (dgd.session_positions || 0));
+        const sec = rem / pps;
+        $("p3k-dg-eta").textContent = sec < 3600 ? `${Math.round(sec / 60)}m` : `${(sec / 3600).toFixed(1)}h`;
+      } else {
+        $("p3k-dg-eta").textContent = "—";
+      }
+    }
+
+    // 3. SPSA Search Tuner
+    const sp = d.spsa || {};
+    const spd = sp.detail || null;
+    const spRun = Boolean(sp.running);
+    const spCard = $("p3k-card-spsa");
+    if (spCard) {
+      spCard.classList.toggle("running", spRun);
+      spCard.classList.toggle("done", !spRun && spd && spd.iter >= spd.max_iters && spd.max_iters > 0);
+      $("btn-p3k-spsa-start").classList.toggle("hidden", spRun);
+      $("btn-p3k-spsa-stop").classList.toggle("hidden", !spRun);
+      $("p3k-spsa-threads").disabled = spRun;
+      $("p3k-spsa-iters").disabled = spRun;
+      const spPct = spd ? spd.progress_pct || 0 : 0;
+      $("p3k-spsa-pill").textContent = spRun ? `Tuning (${spd ? spd.threads : 2}T)` : spd && spd.iter > 0 ? `Saved (Iter ${spd.iter})` : "Idle";
+      $("p3k-spsa-fill").style.width = `${Math.max(0, Math.min(100, spPct)).toFixed(1)}%`;
+      $("p3k-spsa-pct").textContent = `${Math.round(spPct)}%`;
+      $("p3k-spsa-iter").textContent = spd ? `${spd.iter || 0} / ${spd.max_iters || 150}` : "0 / 150";
+      $("p3k-spsa-score").textContent = spd && spd.n_games ? `+δ ${spd.plus_score}/${spd.n_games}` : "—";
+      if (spd && spd.params) {
+        $("p3k-spsa-params").textContent = `RFP ${spd.params.RFPBase} • Fut ${spd.params.FutMult} • LMR ${spd.params.HistLMRDiv}`;
+      }
+    }
+
+    // 4. Big 16x768 -> 1024 NNUE v4 GPU Trainer
+    const nn = d.nnue_v4 || {};
+    const nnd = nn.detail || null;
+    const nnRun = Boolean(nn.running);
+    const nnCard = $("p3k-card-nnue");
+    if (nnCard) {
+      nnCard.classList.toggle("running", nnRun);
+      nnCard.classList.toggle("done", Boolean(nn.ready) && !nnRun);
+      $("btn-p3k-nnue-start").classList.toggle("hidden", nnRun);
+      $("btn-p3k-nnue-stop").classList.toggle("hidden", !nnRun);
+      $("btn-p3k-nnue-start").disabled = d.az_running || (dg.file_positions || 0) < 2048;
+      $("p3k-nnue-epochs").disabled = nnRun;
+      const nnPct = nnRun && nnd ? nnd.progress_pct || 0 : nn.ready ? 100 : 0;
+      $("p3k-nnue-pill").textContent = nnRun
+        ? `GPU Epoch ${nnd ? nnd.epoch : 0}/${nnd ? nnd.epochs : 24}`
+        : nn.ready
+        ? "✓ 1024 NNUE v4 Live!"
+        : (dg.file_positions || 0) >= 2048
+        ? "Ready to Train"
+        : "Waiting for Data";
+      $("p3k-nnue-fill").style.width = `${Math.max(0, Math.min(100, nnPct)).toFixed(1)}%`;
+      $("p3k-nnue-pct").textContent = `${Math.round(nnPct)}%`;
+      $("p3k-nnue-msg").textContent =
+        (nnd && nnd.message) ||
+        (nn.ready
+          ? "data/titan_v6_1024.nnue loaded automatically by Apex-C Pure & Syzygy!"
+          : (dg.file_positions || 0) >= 2048
+          ? `${(dg.file_positions || 0).toLocaleString()} positions ready — pause Zero-C & click Train!`
+          : "Collect positions in Stage 2 first");
+      $("p3k-nnue-val").textContent = nnd && nnd.best_val_mse != null ? String(nnd.best_val_mse) : "—";
+      if (nn.ready && !p3kNnueWasReady) {
+        p3kNnueWasReady = true;
+        api("/api/state", "GET").then((fresh) => {
+          if (fresh && fresh.ok) {
+            state = fresh;
+            populatePresets(state.presets);
+          }
+        });
+      }
+    }
+
+    // Update Home Card live metrics
+    if ($("home-p3k-syz")) {
+      $("home-p3k-syz").textContent = `${syzFiles} / ${syzTarget}`;
+      $("home-p3k-dg").textContent =
+        (dg.file_positions || 0) >= 1e6
+          ? `${((dg.file_positions || 0) / 1e6).toFixed(2)}M`
+          : `${(dg.file_positions || 0).toLocaleString()}`;
+      $("home-p3k-nnue").textContent = nn.ready ? "✓ 1024 Live" : nnRun ? "Training..." : "Pending";
+    }
+  }
+
+  function renderToyStatus(t) {
+    if (!t || !t.ok) return;
+    toyLastData = t;
+    const det = t.detail || null;
+    const run = Boolean(t.running);
+    const card = $("r3k-toy-card");
+    if (!card) return;
+    const gen = det ? det.gen || 0 : 0;
+    const games = det ? det.total_games || 0 : 0;
+    const hist = det ? det.history || [] : [];
+    const lastH = hist.length > 0 ? hist[hist.length - 1] : null;
+    const pct = Math.min(100, (gen / 60) * 100);
+
+    card.classList.toggle("running", run);
+    card.classList.toggle("done", !run && gen >= 60);
+    $("toy-pill").textContent = run ? `Training Gen ${gen}` : gen >= 60 ? "✓ Sprint Done!" : gen > 0 ? `Saved Gen ${gen}` : "Ready";
+    $("btn-toy-start").classList.toggle("hidden", run);
+    $("btn-toy-stop").classList.toggle("hidden", !run);
+    $("btn-toy-start").disabled = Boolean(t.az_running);
+    if ($("btn-toy-play")) $("btn-toy-play").classList.toggle("hidden", !t.has_ckpt);
+    $("toy-fill").style.width = `${pct.toFixed(1)}%`;
+    $("toy-pct").textContent = `${Math.round(pct)}%`;
+    $("toy-gen").textContent = `Gen ${gen}`;
+    $("toy-games").textContent = games.toLocaleString();
+    $("toy-acc").textContent = lastH ? `${lastH.pol_acc}%` : "—";
+    $("toy-loss").textContent = lastH ? String(lastH.loss) : "—";
+    $("toy-msg").textContent = t.az_running
+      ? "Zero-C v2 is using the GPU — pause v2 to run a 15-min Toy Sprint!"
+      : (det && det.message) || "Ready for a quick 15-min tabula rasa sprint!";
+  }
+
+  function renderRoadCampaign() {
+    const az = azLastData || {};
+    const p3k = p3kLastData || {};
+    const syz = p3k.syzygy || {};
+    const dg = p3k.datagen || {};
+    const nn = p3k.nnue_v4 || {};
+    const comp = az.completion ? az.completion : computeClientCompletion(az);
+
+    const syzFrac = Math.min(1, (syz.files || 0) / Math.max(1, syz.target_files || 290));
+    const syzDone = Boolean(syz.ready) && (syz.files || 0) >= 285;
+    const zcFrac = az.hybrids_unlocked || comp.is_complete ? 1 : Math.min(0.99, (comp.progress_pct || 0) / 100);
+    const zcDone = Boolean(az.hybrids_unlocked || comp.is_complete);
+    const singDone = Boolean(az.nnue_distilled);
+    const dgFrac = Math.min(1, (dg.file_positions || 0) / 25000000);
+    const nnDone = Boolean(nn.ready);
+    const forgeFrac = nnDone ? 1 : 0.7 * dgFrac;
+
+    // Master weighted 0..100% progress reflecting exact partial progress on disk!
+    const masterPct = Math.min(
+      100,
+      Math.round(15 + 10 * syzFrac + 30 * zcFrac + 10 * (singDone ? 1 : 0) + 35 * forgeFrac)
+    );
+
+    const unlockedCount = FIGHTERS_ROSTER.filter((f) => !isFighterLocked(f)).length;
+    const totalCount = FIGHTERS_ROSTER.length;
+
+    if ($("r3k-master-fill")) $("r3k-master-fill").style.width = `${masterPct}%`;
+    if ($("r3k-master-pct")) $("r3k-master-pct").textContent = `${masterPct}%`;
+    if ($("r3k-master-unlocked")) $("r3k-master-unlocked").textContent = `Challengers: ${unlockedCount} / ${totalCount} Unlocked`;
+    if ($("r3k-master-sub")) {
+      $("r3k-master-sub").textContent = nnDone
+        ? "🏆 3,000+ Elo Grandmaster Crusher Forged! Challenge Apex-C 3000 & the Mythic Hybrids!"
+        : `Zero-C v2 at Gen ${az.gen || 0} (${Math.round(zcFrac * 100)}%) • Syzygy ${syz.files || 0}/290 • Datagen ${((dg.file_positions || 0) / 1e6).toFixed(2)}M/25M`;
+    }
+    if ($("home-r3k-fill")) $("home-r3k-fill").style.width = `${masterPct}%`;
+    if ($("home-r3k-pct")) $("home-r3k-pct").textContent = `${masterPct}%`;
+    if ($("home-r3k-unlocked")) $("home-r3k-unlocked").textContent = `${unlockedCount} / ${totalCount}`;
+    if ($("home-az-pill")) {
+      const runningTag = az.running ? "Training • " : "";
+      $("home-az-pill").textContent = `${runningTag}Road to 3K • ${masterPct}%`;
+      $("home-az-pill").classList.toggle("active", Boolean(az.running || masterPct >= 100));
+    }
+
+    const chapters = [
+      {
+        num: "Chapter 1",
+        title: "⚔️ The Iron Guild (Base C11)",
+        desc: "Classic Alpha-Beta + Full Correction History + Capture/Cut LMR (~2,550–2,580 Elo). Starts Apex-C at Lv 1/4 Prototype!",
+        pct: 100,
+        done: true,
+        active: false,
+        rewards: ["titan-1", "titan-4", "titan-6", "apex-pure"],
+        btnTxt: "🛡️ Inspect Guild",
+        action: () => {
+          closeAzModal(true);
+          openFightersModal("titan-6");
+        },
+      },
+      {
+        num: "Chapter 2",
+        title: "📚 5-Piece Syzygy Vault",
+        desc: "One-click ~939 MB endgame tablebase download (0% GPU) — unlocks & evolves Apex-C + Syzygy to Lv 2/5 (+70 Elo)!",
+        pct: Math.round(syzFrac * 100),
+        done: syzDone,
+        active: !syzDone,
+        rewards: ["apex-syzygy"],
+        btnTxt: syzDone ? "✓ Installed — Open Forge" : "⬇ Open Syzygy Download",
+        action: () => setR3kTab("forge", true),
+      },
+      {
+        num: "Chapter 3",
+        title: "🧠 Awaken Zero-C v2 (AlphaZero)",
+        desc: "Train a pure tabula rasa 10×128 neural mind on your RTX GPU to pass the 4 Convergence Gates.",
+        pct: Math.round(zcFrac * 100),
+        done: zcDone,
+        active: !zcDone,
+        rewards: ["zero-v2", "hybrid-dual", "hybrid-lmr", "hybrid-omega"],
+        btnTxt: az.running ? "📊 View Live Zero-C Charts" : "🧠 Open Zero-C v2 Lab",
+        action: () => setR3kTab("zeroc", true),
+      },
+      {
+        num: "Chapter 4",
+        title: "⚡ Distill Singularity v5",
+        desc: "Compress Zero-C v2's 3.56M ResNet into a blazing-fast 200ns AVX2 CPU NNUE (~3 min on GPU).",
+        pct: singDone ? 100 : 0,
+        done: singDone,
+        active: zcDone && !singDone,
+        rewards: ["hybrid-nnue"],
+        btnTxt: singDone ? "✓ Singularity Unlocked!" : "⚡ Go to Distillation Forge",
+        action: () => setR3kTab("zeroc", true),
+      },
+      {
+        num: "Chapter 5",
+        title: "🔥 Forge 3,000+ Elo Apex-C v4",
+        desc: "Generate 25M–50M positions (safe on 2 CPU threads alongside Zero-C!), tune SPSA, & train 1024-wide NNUE v4!",
+        pct: Math.round(forgeFrac * 100),
+        done: nnDone,
+        active: !nnDone,
+        rewards: ["apex-pure", "apex-syzygy"],
+        btnTxt: "🔥 Open 3000 Forge",
+        action: () => setR3kTab("forge", true),
+      },
+      {
+        num: "Side Quest",
+        title: "⚡ 15-Min Toy Net Sprint",
+        desc: "Short on time? Spin up a fast Tiny 4×64 sandbox net in data/az_toy/ and watch it learn chess in 15 min!",
+        pct: toyLastData && toyLastData.detail ? Math.min(100, Math.round(((toyLastData.detail.gen || 0) / 60) * 100)) : 0,
+        done: Boolean(toyLastData && toyLastData.detail && (toyLastData.detail.gen || 0) >= 60),
+        active: false,
+        rewards: ["zero-v1"],
+        btnTxt: "⚡ Open Toy Net Lab",
+        action: () => setR3kTab("toy", true),
+      },
+    ];
+
+    const grid = $("r3k-chapters-grid");
+    if (grid) {
+      grid.innerHTML = chapters
+        .map((ch, idx) => {
+          const avHtml = ch.rewards
+            .map((rid) => {
+              const f = FIGHTERS_ROSTER.find((x) => x.id === rid);
+              if (!f) return "";
+              const lk = isFighterLocked(f);
+              return `<span class="r3k-mini-av ${lk ? "locked" : ""}" style="border-color:${f.accent}" title="${lk ? "🔒 " : "✓ "}${f.name}">${f.avatar}</span>`;
+            })
+            .join("");
+          return `<div class="r3k-chap-card ${ch.done ? "done" : ch.active ? "active" : ""}">
+            <div class="r3k-chap-top">
+              <span class="r3k-chap-num">${ch.num}</span>
+              <span class="p3k-status-pill">${ch.done ? "✓ Complete" : `${ch.pct}%`}</span>
+            </div>
+            <div class="r3k-chap-title">${ch.title}</div>
+            <p class="r3k-chap-desc">${ch.desc}</p>
+            <div class="p3k-bar"><div class="p3k-bar-fill ${ch.done ? "p3k-fill-gold" : "p3k-fill-orange"}" style="width:${ch.pct}%"></div></div>
+            <div class="r3k-chap-reward"><span>Unlocks:</span>${avHtml}</div>
+            <button type="button" class="btn btn-sm ${ch.done ? "" : "btn-primary"}" data-chap-idx="${idx}" style="margin-top:auto;">${ch.btnTxt}</button>
+          </div>`;
+        })
+        .join("");
+      grid.querySelectorAll("[data-chap-idx]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const c = chapters[parseInt(btn.dataset.chapIdx, 10)];
+          if (c && c.action) c.action();
+        });
+      });
+    }
+
+    const strip = $("r3k-trophy-strip");
+    if (strip) {
+      const bosses = FIGHTERS_ROSTER.filter((f) => f.faction !== "stockfish");
+      strip.innerHTML = bosses
+        .map((f) => {
+          const lk = isFighterLocked(f);
+          const evo = getApexEvolution(f);
+          const avAccent = evo ? evo.accent : f.accent;
+          const evoCls = evo && !lk ? `apex-evolving ${evo.tierClass}` : "";
+          return `<div class="r3k-trophy-chip ${lk ? "locked" : ""} ${evoCls}" data-tfid="${f.id}" style="--f-accent:${avAccent}" title="${
+            lk
+              ? "Locked — click to inspect unlock requirements"
+              : evo
+              ? `${f.name} — ${evo.shortStatus} (${evo.pct}% forged, click to see Forge checklist)`
+              : "Click to inspect & challenge!"
+          }">
+            <span class="r3k-mini-av ${lk ? "locked" : ""}" style="border-color:${avAccent}">${f.avatar}</span>
+            <div>
+              <span>${lk ? "🔒 " : ""}${f.name}${
+                evo && !lk ? ` <em class="r3k-evo-tag">${evo.badgeText}</em>` : ""
+              }</span><br>
+              <small>${fighterDisplayElo(f)}</small>
+              ${evo && !lk ? `<div class="apex-pips-row sm">${evo.pipsHtml}</div>` : ""}
+            </div>
+          </div>`;
+        })
+        .join("");
+      strip.querySelectorAll("[data-tfid]").forEach((el) => {
+        el.addEventListener("click", () => {
+          closeAzModal(true);
+          openFightersModal(el.dataset.tfid);
+        });
+      });
+    }
+  }
+
+  async function pollP3kStatus() {
+    const [az, p3k] = await Promise.all([api("/api/az/status", "GET"), api("/api/p3k/status", "GET")]);
+    if (az && az.ok) renderAzStatus(az);
+    if (p3k && p3k.ok) renderP3kStatus(p3k);
+    renderRoadCampaign();
+  }
+
+  if ($("btn-home-p3k")) $("btn-home-p3k").addEventListener("click", () => openAzModal("forge"));
+
+  if ($("btn-p3k-syz-start")) {
+    $("btn-p3k-syz-start").addEventListener("click", async () => {
+      const res = await api("/api/p3k/syzygy/start", "POST");
+      if (res && res.ok) {
+        renderP3kStatus(res);
+        logTerm("Started 5-Piece Syzygy Tablebase download into data/syzygy/ (~939 MB).", "term-ok");
+      } else {
+        logTerm((res && res.error) || "Could not start Syzygy download.", "term-err");
+      }
+    });
+  }
+  if ($("btn-p3k-syz-stop")) {
+    $("btn-p3k-syz-stop").addEventListener("click", async () => {
+      const res = await api("/api/p3k/syzygy/stop", "POST");
+      if (res && res.ok) renderP3kStatus(res);
+      logTerm("Paused Syzygy download (resumable anytime).", "term-warn");
+    });
+  }
+  if ($("btn-toy-start")) {
+    $("btn-toy-start").addEventListener("click", async () => {
+      const arch = ($("toy-arch") && $("toy-arch").value) || "tiny";
+      const res = await api("/api/toy/start", "POST", { arch, reset: false });
+      if (res && res.ok) {
+        renderToyStatus(res);
+        logTerm(`Started 15-min Zero-C Toy Net (${arch}) in data/az_toy/!`, "term-ok");
+      } else {
+        logTerm((res && res.error) || "Could not start Toy Net.", "term-err");
+      }
+    });
+  }
+  if ($("btn-toy-stop")) {
+    $("btn-toy-stop").addEventListener("click", async () => {
+      const res = await api("/api/toy/stop", "POST");
+      if (res && res.ok) renderToyStatus(res);
+      logTerm("Paused Toy Net cleanly.", "term-warn");
+    });
+  }
+  if ($("btn-toy-reset")) {
+    $("btn-toy-reset").addEventListener("click", async () => {
+      if (!window.confirm("Reset ONLY the 15-min Toy Net (data/az_toy/) to Gen 0? Your main Zero-C v2 run is untouched!")) return;
+      const arch = ($("toy-arch") && $("toy-arch").value) || "tiny";
+      const res = await api("/api/toy/start", "POST", { arch, reset: true });
+      if (res && res.ok) renderToyStatus(res);
+    });
+  }
+  if ($("btn-toy-play")) {
+    $("btn-toy-play").addEventListener("click", async () => {
+      closeAzModal(true);
+      showBoardWorkspace();
+      await startNewGame("white", 12, 12, "", 0, "data/az_toy/latest.pt");
+    });
+  }
+  if ($("btn-toy-play-v1")) {
+    $("btn-toy-play-v1").addEventListener("click", async () => {
+      closeAzModal(true);
+      showBoardWorkspace();
+      await startNewGame("white", 13, 13);
+    });
+  }
+
+  if ($("btn-p3k-dg-start")) {
+    $("btn-p3k-dg-start").addEventListener("click", async () => {
+      const threads = parseInt($("p3k-dg-threads").value, 10) || 2;
+      const millions = parseInt($("p3k-dg-millions").value, 10) || 25;
+      const res = await api("/api/p3k/datagen/start", "POST", { threads, millions, nodes: 5000 });
+      if (res && res.ok) {
+        renderP3kStatus(res);
+        logTerm(`Started Project 3000 Datagen (${threads}T, nice 15, +${millions}M positions).`, "term-ok");
+      } else {
+        logTerm((res && res.error) || "Could not start Datagen.", "term-err");
+      }
+    });
+  }
+  if ($("btn-p3k-dg-stop")) {
+    $("btn-p3k-dg-stop").addEventListener("click", async () => {
+      const res = await api("/api/p3k/datagen/stop", "POST");
+      if (res && res.ok) renderP3kStatus(res);
+      logTerm("Stopped Project 3000 Datagen cleanly (all generated positions saved).", "term-warn");
+    });
+  }
+  if ($("btn-p3k-spsa-start")) {
+    $("btn-p3k-spsa-start").addEventListener("click", async () => {
+      const threads = parseInt($("p3k-spsa-threads").value, 10) || 2;
+      const iters = parseInt($("p3k-spsa-iters").value, 10) || 150;
+      const res = await api("/api/p3k/spsa/start", "POST", { threads, iters, nodes: 12000 });
+      if (res && res.ok) {
+        renderP3kStatus(res);
+        logTerm(`Started SPSA Search Tuner (${threads}T, nice 15, ${iters} iters).`, "term-ok");
+      } else {
+        logTerm((res && res.error) || "Could not start SPSA Tuner.", "term-err");
+      }
+    });
+  }
+  if ($("btn-p3k-spsa-stop")) {
+    $("btn-p3k-spsa-stop").addEventListener("click", async () => {
+      const res = await api("/api/p3k/spsa/stop", "POST");
+      if (res && res.ok) renderP3kStatus(res);
+      logTerm("Stopped SPSA Search Tuner cleanly.", "term-warn");
+    });
+  }
+  if ($("btn-p3k-nnue-start")) {
+    $("btn-p3k-nnue-start").addEventListener("click", async () => {
+      const epochs = parseInt($("p3k-nnue-epochs").value, 10) || 24;
+      const res = await api("/api/p3k/nnue/start", "POST", { epochs });
+      if (res && res.ok) {
+        p3kNnueWasReady = false;
+        renderP3kStatus(res);
+        logTerm(`Started Big 1024 NNUE v4 GPU Trainer (${epochs} epochs)!`, "term-ok");
+      } else {
+        logTerm((res && res.error) || "Could not start Big NNUE v4 training.", "term-err");
+      }
+    });
+  }
+  if ($("btn-p3k-nnue-stop")) {
+    $("btn-p3k-nnue-stop").addEventListener("click", async () => {
+      const res = await api("/api/p3k/nnue/stop", "POST");
+      if (res && res.ok) renderP3kStatus(res);
+      logTerm("Stopped Big NNUE v4 GPU Trainer.", "term-warn");
+    });
+  }
+
+  // ==========================================================================
   // Client-Side History API URL Router (Back / Forward / Direct URL / Refresh)
   // ==========================================================================
   let isPoppingRoute = false;
 
   const ROUTE_TITLES = {
-    "/": "Chess-in-C :: Dark Studio",
-    "/play": "Play • Chess-in-C",
-    "/analysis": "Analysis • Chess-in-C",
-    "/puzzles": "Tactical Puzzles • Chess-in-C",
-    "/zero-c": "Zero-C Mission Control • Chess-in-C",
-    "/spectate": "Spectate Training • Chess-in-C",
-    "/elo-arena": "Elo Arena • Chess-in-C",
-    "/elo-calculator": "Elo Calculator • Chess-in-C",
-    "/history": "Game History • Chess-in-C",
-    "/review": "Game Review • Chess-in-C",
+    "/": "♞ Chess-in-C :: Dark Studio",
+    "/play": "♞ Play • Chess-in-C",
+    "/analysis": "🔍 Analysis • Chess-in-C",
+    "/puzzles": "🧩 Tactical Puzzles • Chess-in-C",
+    "/fighters": "🛡️ Hall of Champions • Chess-in-C",
+    "/road-to-3k": "🚀 Road to 3K • Chess-in-C",
+    "/project-3000": "🔥 3000 Forge • Road to 3K",
+    "/zero-c": "🧠 Zero-C v2 Lab • Road to 3K",
+    "/toy-net": "⚡ Toy Net Sprint • Road to 3K",
+    "/spectate": "👁️ Spectate Training • Chess-in-C",
+    "/elo-arena": "🏆 Elo Arena • Chess-in-C",
+    "/elo-calculator": "🎯 Elo Calculator • Chess-in-C",
+    "/history": "📜 Game History • Chess-in-C",
+    "/review": "★ Game Review • Chess-in-C",
   };
 
   function underlyingBaseRoute() {
@@ -3641,6 +5480,7 @@
       stopGauntletPolling();
     }
     if ($("history-modal")) $("history-modal").classList.add("hidden");
+    if ($("fighters-modal")) $("fighters-modal").classList.add("hidden");
     if ($("review-modal")) $("review-modal").classList.add("hidden");
     if ($("puzzle-modal")) $("puzzle-modal").classList.add("hidden");
     if ($("bots-here-modal")) $("bots-here-modal").classList.add("hidden");
@@ -3654,9 +5494,22 @@
       closeAllOverlayModalsSilent();
       if (path === "/" || path === "/index.html") {
         await showHomeMenu();
+        pollP3kStatus();
+      } else if (path === "/road-to-3k") {
+        if (isBoot) await showHomeMenu();
+        await openAzModal("map");
+      } else if (path === "/project-3000") {
+        if (isBoot) await showHomeMenu();
+        await openAzModal("forge");
+      } else if (path === "/toy-net") {
+        if (isBoot) await showHomeMenu();
+        await openAzModal("toy");
+      } else if (path === "/fighters") {
+        if (isBoot) await showHomeMenu();
+        openFightersModal();
       } else if (path === "/zero-c") {
         if (isBoot) await showHomeMenu();
-        await openAzModal();
+        await openAzModal("zeroc");
       } else if (path === "/spectate" || path.startsWith("/spectate/")) {
         const seg = path.split("/")[2];
         const gid = seg && /^\d+$/.test(seg) ? Math.max(0, parseInt(seg, 10) - 1) : -1;

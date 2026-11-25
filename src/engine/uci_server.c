@@ -33,6 +33,7 @@ typedef struct uci_state {
     int go_depth;
     int go_soft_ms;
     int go_time_ms;
+    u64 go_nodes;
     bool go_infinite;
     bool limit_strength;
     int uci_elo;
@@ -175,6 +176,11 @@ static void *search_thread_fn(void *arg) {
         if (n > 0) {
             best_mv = lines[0].best_move;
         }
+    } else if (st->go_nodes > 0ull) {
+        engine_set_info_callback(st->eng, uci_info_callback, st->game);
+        search_result sr = engine_search_nodes(st->eng, st->game, st->go_depth, st->go_nodes);
+        engine_set_info_callback(st->eng, NULL, NULL);
+        best_mv = sr.best_move;
     } else if (st->limit_strength && !st->go_infinite) {
         search_result sr = engine_search_elo(st->eng, st->game, st->uci_elo);
         best_mv = sr.best_move;
@@ -338,10 +344,14 @@ static void handle_setoption(uci_state *st, const char *line) {
         }
     } else if (strcmp(name, "EvalFile") == 0) {
         if (nnue_load_file(val)) {
-            printf("info string loaded NNUE %s\n", val);
+            printf("info string loaded NNUE %s (v%u, hidden=%d)\n", val, nnue_get_loaded_version(),
+                nnue_get_loaded_hidden());
         } else {
             printf("info string failed to load NNUE %s\n", val);
         }
+    } else if (strcmp(name, "UseSyzygy") == 0) {
+        bool on = (strcmp(val, "true") == 0 || strcmp(val, "1") == 0);
+        engine_set_use_syzygy(st->eng, on);
     } else if (strcmp(name, "Clear Hash") == 0) {
         engine_clear_tt(st->eng);
     } else if (strcmp(name, "UCI_LimitStrength") == 0) {
@@ -366,6 +376,7 @@ static void handle_go(uci_state *st, const char *line) {
 
     int wtime = -1, btime = -1, winc = 0, binc = 0, movestogo = 0;
     int movetime = -1, depth = -1;
+    u64 nodes_lim = 0ull;
     bool infinite = false;
 
     char copy[1024];
@@ -407,6 +418,11 @@ static void handle_go(uci_state *st, const char *line) {
             char *v = strtok_r(NULL, " \t\r\n", &save);
             if (v) {
                 depth = atoi(v);
+            }
+        } else if (strcmp(tok, "nodes") == 0) {
+            char *v = strtok_r(NULL, " \t\r\n", &save);
+            if (v) {
+                nodes_lim = strtoull(v, NULL, 10);
             }
         } else if (strcmp(tok, "infinite") == 0) {
             infinite = true;
@@ -457,6 +473,7 @@ static void handle_go(uci_state *st, const char *line) {
     st->go_depth = use_depth;
     st->go_soft_ms = use_soft_ms;
     st->go_time_ms = use_time_ms;
+    st->go_nodes = nodes_lim;
     st->go_infinite = infinite;
     st->searching = (pthread_create(&st->search_thread, NULL, search_thread_fn, st) == 0);
 }

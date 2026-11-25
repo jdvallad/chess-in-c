@@ -53,6 +53,8 @@ int engine_get_threads(const engine *eng);
 void engine_set_use_book(engine *eng, bool use_book);
 bool engine_get_use_book(const engine *eng);
 void engine_set_book_path(engine *eng, const char *path);
+void engine_set_use_syzygy(engine *eng, bool enable);
+bool engine_get_use_syzygy(const engine *eng);
 void engine_set_info_callback(engine *eng, engine_info_cb cb, void *user_data);
 void engine_set_multipv_callback(engine *eng, engine_multipv_cb cb, void *user_data);
 void engine_request_stop(engine *eng);
@@ -78,6 +80,9 @@ int engine_num_presets(void);
 
 // Search from `game` with explicit depth & time limits (time_ms <= 0 means depth-only).
 search_result engine_search(engine *eng, const full_chess *game, int max_depth, int time_ms);
+
+// Fixed-node search (used by Project 3000 datagen & UCI `go nodes N`).
+search_result engine_search_nodes(engine *eng, const full_chess *game, int max_depth, u64 max_nodes);
 
 // Clock-aware search with separate soft (early-stop on stability) and hard (max panic) limits.
 search_result engine_search_timed(

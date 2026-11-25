@@ -64,10 +64,27 @@ static int quick_material_cp(const chess *b) {
     return fm - em;
 }
 
+// Highest net SEE gain the opponent has on any immediate capture in `b`.
+static int max_stm_capture_see(const chess *b) {
+    chess tmp = *b;
+    u64 mvs[MAX_LEGAL_MOVES];
+    int n = set_legal_moves(&tmp, mvs);
+    int best = 0;
+    for (int i = 0; i < n; i++) {
+        if (get_end_piece(mvs[i]) != NONE || is_en_passant_move(mvs[i])) {
+            int s = engine_see(b, mvs[i]);
+            if (s > best) {
+                best = s;
+            }
+        }
+    }
+    return best;
+}
+
 static bool is_brilliant_sacrifice(const chess *before_board, u64 played, int num_legal,
     int move_num, bool is_best, double win_drop_pct, int eval_before_mover, int eval_after_mover) {
     (void) eval_before_mover;
-    if (!is_best && win_drop_pct > 1.2) {
+    if (!is_best && win_drop_pct > 1.5) {
         return false;
     }
     // Must be a real choice (not forced) and past the first 4 opening moves
@@ -80,14 +97,27 @@ static bool is_brilliant_sacrifice(const chess *before_board, u64 played, int nu
     }
     u8 sp = get_start_piece(played);
     u8 pr = get_promotion_piece(played);
-    // Require sacrificing a real piece (N/B/R/Q or promotion sacrifice), not a random pawn push
-    if (sp == FRIENDLY_PAWN && pr == sp) {
-        return false;
+    // 1. Active piece sacrifice onto a defended square (e.g. Qxd8+, Bxh7+, Nxf7!, Rxc3!)
+    if (sp != FRIENDLY_PAWN || pr != sp) {
+        int see_val = engine_see(before_board, played);
+        if (see_val <= -180) {
+            return true;
+        }
     }
-    // Static Exchange Evaluation detects genuine tactical piece sacrifices (e.g. Qxd8+, Bxh7+, Nxf7!)
-    int see_val = engine_see(before_board, played);
-    if (see_val <= -200) {
-        return true;
+    // 2. Quiet tactical sacrifice: leaving a minor/major piece en prise for an attack or mate!
+    if (eval_after_mover >= 50) {
+        chess after = *before_board;
+        chess_make_move(&after, played);
+        int opp_cap_after = max_stm_capture_see(&after);
+        if (opp_cap_after >= 280) {
+            // Confirm it wasn't just recapturing/ignoring an already-equal trade
+            chess before_flipped = *before_board;
+            flip_perspective(&before_flipped);
+            int opp_cap_before = max_stm_capture_see(&before_flipped);
+            if (opp_cap_after >= opp_cap_before + 180) {
+                return true;
+            }
+        }
     }
     return false;
 }

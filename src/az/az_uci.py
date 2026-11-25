@@ -43,18 +43,27 @@ class ZeroCUci:
 
     def _load_model_if_needed(self, force=False):
         if os.path.exists(self.ckpt_path):
-            mt = os.path.getmtime(self.ckpt_path)
+            try:
+                mt = os.path.getmtime(self.ckpt_path)
+            except OSError:
+                mt = self.ckpt_mtime
             if force or mt != self.ckpt_mtime or self.model is None:
-                self.model, ckpt = load_checkpoint(self.ckpt_path, self.device)
-                if self.use_amp:
-                    self.model = self.model.half().to(memory_format=torch.channels_last)
-                self.model.eval()
-                self.ckpt_mtime = mt
-                self.gen = int(ckpt.get("meta", {}).get("gen", 0))
-                if self.arena is not None:
-                    self.arena.lib.az_arena_reset_game(self.arena.ptr, 0, None)
-                return True
-        elif self.model is None:
+                try:
+                    new_model, ckpt = load_checkpoint(self.ckpt_path, self.device)
+                    if self.use_amp:
+                        new_model = new_model.half().to(memory_format=torch.channels_last)
+                    new_model.eval()
+                    self.model = new_model
+                    self.ckpt_mtime = mt
+                    self.gen = int(ckpt.get("meta", {}).get("gen", 0))
+                    if self.arena is not None:
+                        self.arena.lib.az_arena_reset_game(self.arena.ptr, 0, None)
+                    return True
+                except Exception:
+                    # Keep previous loaded model hot if checkpoint is mid-replace; retry next move
+                    if self.model is not None:
+                        return False
+        if self.model is None:
             self.model = ZeroCNet(10, 128).to(self.device)
             if self.use_amp:
                 self.model = self.model.half().to(memory_format=torch.channels_last)

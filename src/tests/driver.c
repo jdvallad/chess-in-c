@@ -1049,7 +1049,7 @@ static bool test_engine_upgrades(full_chess *game) {
         // Verify incremental nnue_acc_make_move AND lazy Finny-cached nnue_acc_materialize
         // match scratch nnue_evaluate BIT-FOR-BIT across all legal moves (including castling,
         // king-bucket / mirror transitions, captures, promotions, and en passant)!
-        nnue_finny_entry test_finny[2][NNUE_KING_BUCKETS][2];
+        nnue_finny_entry test_finny[2][NNUE_MAX_KING_BUCKETS][2];
         memset(test_finny, 0, sizeof(test_finny));
         for (int f = 0; f < n_fens; f++) {
             set_from_fen(game, stress_fens[f]);

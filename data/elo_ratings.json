@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-11-24 12:33:58",
+  "updated_at": "2026-11-25 10:55:24",
   "mode": "stockfish",
   "opponent": "Stockfish 14.1",
   "levels": [
@@ -9,6 +9,6 @@
     {"level": 4, "name": "Strong", "has_elo": true, "is_relative": false, "est_elo": 1274, "anchor_elo": 1950, "wins": 0, "draws": 0, "losses": 6, "games": 6},
     {"level": 5, "name": "Master", "has_elo": true, "is_relative": false, "est_elo": 2370, "anchor_elo": 2250, "wins": 4, "draws": 0, "losses": 2, "games": 6},
     {"level": 6, "name": "Grandmaster", "has_elo": true, "is_relative": false, "est_elo": 2620, "anchor_elo": 2500, "wins": 3, "draws": 2, "losses": 1, "games": 6},
-    {"level": 7, "name": "Zero-C (AlphaZero)", "has_elo": true, "is_relative": false, "est_elo": 1231, "anchor_elo": 1320, "wins": 6, "draws": 0, "losses": 10, "games": 16}
+    {"level": 7, "name": "Zero-C (AlphaZero)", "has_elo": true, "is_relative": false, "est_elo": 1397, "anchor_elo": 1400, "wins": 22, "draws": 0, "losses": 23, "games": 45}
   ]
 }

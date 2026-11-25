@@ -59,17 +59,22 @@ typedef struct search_worker {
     int16_t cont_history[6][64][6][64]; // 1-ply opponent response history
     int16_t followup_history[6][64][6][64]; // 2-ply own follow-up history
     int16_t cont4_history[6][64][6][64]; // 4-ply own continuation history
+    int16_t low_ply_hist[4][64][64]; // low-ply (plies 0..3) quiet move ordering history
     int16_t corr_hist[2][CORR_SIZE]; // pawn-structure correction history
     int16_t nonpawn_corr[2][2]
                         [CORR_SIZE]; // [stm][color(0=W,1=B)] non-pawn piece correction history
+    int16_t minor_corr[2][CORR_SIZE]; // minor-piece (K+N+B) correction history
+    int16_t major_corr[2][CORR_SIZE]; // major-piece (K+R+Q) correction history
+    int16_t cont_corr[2][6][64]; // 1-ply continuation correction history [stm][prev_pt][prev_to]
     u16 countermove[64][64];
     int eval_stack[MAX_PLY];
     u64 move_stack[MAX_PLY];
     uint8_t double_exts[MAX_PLY + 4];
     nnue_acc acc_stack[MAX_PLY + 4];
-    nnue_finny_entry finny[2][NNUE_KING_BUCKETS][2];
+    nnue_finny_entry finny[2][NNUE_MAX_KING_BUCKETS][2];
     pawn_tt_entry pawn_tt[PAWN_TT_SIZE];
     u64 nodes;
+    u64 node_limit; // 0 = unlimited; >0 = stop once worker nodes >= node_limit
     chess root_board;
     u64 root_moves[MAX_LEGAL_MOVES];
     int root_count;
@@ -91,6 +96,7 @@ struct engine {
     u64 rng_state;
     int num_threads;
     bool use_book;
+    bool use_syzygy;
     char book_path[256];
     bool limit_strength;
     int target_elo;

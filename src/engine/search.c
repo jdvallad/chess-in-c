@@ -54,6 +54,14 @@ typedef struct search_params {
     int hist_lmr_div;
     int raz_margin;
     int corr_div;
+    int nmp_base;
+    int nmp_div;
+    int lmr_cut;
+    int lmr_cap_div;
+    int corr_minor_w;
+    int corr_major_w;
+    int corr_cont_w;
+    int low_ply_w;
 } search_params;
 
 static search_params g_sp = {
@@ -69,6 +77,14 @@ static search_params g_sp = {
     .hist_lmr_div = 8192,
     .raz_margin = 240,
     .corr_div = 512,
+    .nmp_base = 3,
+    .nmp_div = 6,
+    .lmr_cut = 1,
+    .lmr_cap_div = 6144,
+    .corr_minor_w = 1,
+    .corr_major_w = 1,
+    .corr_cont_w = 1,
+    .low_ply_w = 1,
 };
 
 bool engine_set_param(const char *name, int val) {
@@ -123,6 +139,38 @@ bool engine_set_param(const char *name, int val) {
         g_sp.corr_div = (val > 64) ? val : 64;
         return true;
     }
+    if (strcmp(name, "NMPBase") == 0) {
+        g_sp.nmp_base = (val >= 2 && val <= 5) ? val : 3;
+        return true;
+    }
+    if (strcmp(name, "NMPDiv") == 0) {
+        g_sp.nmp_div = (val >= 3 && val <= 12) ? val : 6;
+        return true;
+    }
+    if (strcmp(name, "LMRCut") == 0) {
+        g_sp.lmr_cut = (val >= 0 && val <= 2) ? val : 1;
+        return true;
+    }
+    if (strcmp(name, "LMRCapDiv") == 0) {
+        g_sp.lmr_cap_div = (val > 512) ? val : 512;
+        return true;
+    }
+    if (strcmp(name, "CorrMinorW") == 0) {
+        g_sp.corr_minor_w = (val >= 0 && val <= 4) ? val : 1;
+        return true;
+    }
+    if (strcmp(name, "CorrMajorW") == 0) {
+        g_sp.corr_major_w = (val >= 0 && val <= 4) ? val : 1;
+        return true;
+    }
+    if (strcmp(name, "CorrContW") == 0) {
+        g_sp.corr_cont_w = (val >= 0 && val <= 4) ? val : 1;
+        return true;
+    }
+    if (strcmp(name, "LowPlyW") == 0) {
+        g_sp.low_ply_w = (val >= 0 && val <= 4) ? val : 1;
+        return true;
+    }
     return false;
 }
 
@@ -162,8 +210,12 @@ static void clear_worker_tables(search_worker *w) {
     memset(w->cont_history, 0, sizeof(w->cont_history));
     memset(w->followup_history, 0, sizeof(w->followup_history));
     memset(w->cont4_history, 0, sizeof(w->cont4_history));
+    memset(w->low_ply_hist, 0, sizeof(w->low_ply_hist));
     memset(w->corr_hist, 0, sizeof(w->corr_hist));
     memset(w->nonpawn_corr, 0, sizeof(w->nonpawn_corr));
+    memset(w->minor_corr, 0, sizeof(w->minor_corr));
+    memset(w->major_corr, 0, sizeof(w->major_corr));
+    memset(w->cont_corr, 0, sizeof(w->cont_corr));
     memset(w->countermove, 0, sizeof(w->countermove));
     memset(w->pawn_tt, 0, sizeof(w->pawn_tt));
     memset(w->finny, 0, sizeof(w->finny));
@@ -306,6 +358,16 @@ void engine_set_book_path(engine *eng, const char *path) {
     }
 }
 
+void engine_set_use_syzygy(engine *eng, bool enable) {
+    if (eng) {
+        eng->use_syzygy = enable;
+    }
+}
+
+bool engine_get_use_syzygy(const engine *eng) {
+    return eng ? eng->use_syzygy : false;
+}
+
 void engine_set_info_callback(engine *eng, engine_info_cb cb, void *user_data) {
     if (eng) {
         eng->info_cb = cb;
@@ -418,6 +480,11 @@ static inline bool should_stop(search_worker *w) {
     if (w->local_abort) {
         return true;
     }
+    if (w->node_limit > 0ull && w->nodes >= w->node_limit) {
+        w->local_abort = true;
+        atomic_store_explicit(&w->eng->stop_flag, true, memory_order_relaxed);
+        return true;
+    }
     if ((w->nodes & 2047ull) == 0ull) {
         if (atomic_load_explicit(&w->eng->stop_flag, memory_order_relaxed)) {
             w->local_abort = true;
@@ -430,6 +497,41 @@ static inline bool should_stop(search_worker *w) {
         }
     }
     return false;
+}
+
+static inline void minor_major_corr_indices(
+    const chess *b, u32 *minor_idx_out, u32 *major_idx_out) {
+    u64 tp = b->pawns & PAWN_MASK;
+    u64 f = b->friendly_pieces;
+    u64 e = b->enemy_pieces;
+    u64 orth = b->orthogonal_pieces;
+    u64 diag = b->diagonal_pieces;
+    u64 kings = b->kings;
+
+    u64 f_minor = (f & ~(tp | orth | diag | kings)) | (f & diag & ~orth) | (f & kings);
+    u64 e_minor = (e & ~(tp | orth | diag | kings)) | (e & diag & ~orth) | (e & kings);
+    u64 f_major = (f & orth) | (f & kings);
+    u64 e_major = (e & orth) | (e & kings);
+
+    if (is_flipped(b)) {
+        u64 wmin = __builtin_bswap64(e_minor);
+        u64 bmin = __builtin_bswap64(f_minor);
+        u64 wmaj = __builtin_bswap64(e_major);
+        u64 bmaj = __builtin_bswap64(f_major);
+        *minor_idx_out
+            = (u32) ((((wmin * 0x9e3779b97f4a7c15ull) ^ (bmin * 0xbf58476d1ce4e5b9ull)) >> 32)
+                     & CORR_MASK);
+        *major_idx_out
+            = (u32) ((((wmaj * 0x94d049bb133111ebull) ^ (bmaj * 0x9e3779b97f4a7c15ull)) >> 32)
+                     & CORR_MASK);
+    } else {
+        *minor_idx_out
+            = (u32) ((((f_minor * 0x9e3779b97f4a7c15ull) ^ (e_minor * 0xbf58476d1ce4e5b9ull)) >> 32)
+                     & CORR_MASK);
+        *major_idx_out
+            = (u32) ((((f_major * 0x94d049bb133111ebull) ^ (e_major * 0x9e3779b97f4a7c15ull)) >> 32)
+                     & CORR_MASK);
+    }
 }
 
 static inline u32 pawn_corr_index(const chess *b) {
@@ -962,6 +1064,9 @@ static u64 mp_next(
                 if (mp->prev4_pt >= 0) {
                     sc += (int) w->cont4_history[mp->prev4_pt][mp->prev4_to][pt][dst] / 2;
                 }
+                if (mp->ply < 4) {
+                    sc += (int) w->low_ply_hist[mp->ply][src][dst] * g_sp.low_ply_w;
+                }
                 mp->quiets[qc] = m;
                 mp->quiet_scores[qc++] = sc;
             }
@@ -1089,6 +1194,10 @@ static int alphabeta(search_worker *w, chess *board, u64 hash, int depth, int al
     u32 corr_idx = pawn_corr_index(board);
     u32 w_np_idx = 0u, b_np_idx = 0u;
     nonpawn_corr_indices(board, &w_np_idx, &b_np_idx);
+    u32 minor_idx = 0u, major_idx = 0u;
+    minor_major_corr_indices(board, &minor_idx, &major_idx);
+    int prev_corr_pt = (prev_move != NULL_MOVE) ? piece_type_idx(get_promotion_piece(prev_move)) : -1;
+    int prev_corr_to = (prev_move != NULL_MOVE) ? (get_end_offset(prev_move) ^ 56) : 0;
     int raw_static_eval = -INF_SCORE;
     int static_eval = -INF_SCORE;
     int eval = -INF_SCORE;
@@ -1096,10 +1205,16 @@ static int alphabeta(search_worker *w, chess *board, u64 hash, int depth, int al
     if (!checked) {
         raw_static_eval
             = (tt_hit && tt_eval != TT_EVAL_NONE) ? tt_eval : eval_board_ply(w, board, ply);
-        // Apply multi-source Static Eval Correction History (pawn + White/Black non-pawn)
-        int corr_delta = (w->corr_hist[side][corr_idx] * 2 + w->nonpawn_corr[side][0][w_np_idx]
-                             + w->nonpawn_corr[side][1][b_np_idx])
-                         / g_sp.corr_div;
+        // Apply full-suite Static Eval Correction History (pawn + W/B non-pawn + minor + major + cont)
+        int corr_sum = w->corr_hist[side][corr_idx] * 2
+                       + w->nonpawn_corr[side][0][w_np_idx]
+                       + w->nonpawn_corr[side][1][b_np_idx]
+                       + w->minor_corr[side][minor_idx] * g_sp.corr_minor_w
+                       + w->major_corr[side][major_idx] * g_sp.corr_major_w
+                       + ((prev_corr_pt >= 0)
+                               ? (w->cont_corr[side][prev_corr_pt][prev_corr_to] * g_sp.corr_cont_w)
+                               : 0);
+        int corr_delta = corr_sum / g_sp.corr_div;
         static_eval = raw_static_eval + corr_delta;
         if (half_move >= 44) {
             static_eval = (static_eval * (200 - half_move)) / 200;
@@ -1164,14 +1279,25 @@ static int alphabeta(search_worker *w, chess *board, u64 hash, int depth, int al
             if (eval_bonus > 3) {
                 eval_bonus = 3;
             }
-            int R = 3 + depth / 6 + eval_bonus;
+            int R = g_sp.nmp_base + depth / g_sp.nmp_div + eval_bonus + (improving ? 1 : 0);
             int null_score = -alphabeta(w, &null_b, null_hash, depth - 1 - R, -beta, -beta + 1,
                 ply + 1, path_len, 0, false, !cut_node, NULL_MOVE, 0u);
             if (w->local_abort) {
                 return 0;
             }
             if (null_score >= beta && null_score < MATE_BOUND) {
-                return beta;
+                // High-depth NMP verification search prevents endgame zugzwang blunders!
+                if (depth < 12) {
+                    return beta;
+                }
+                int ver = alphabeta(w, board, hash, depth - 1 - R, beta - 1, beta, ply, path_len,
+                    half_move, false, false, prev_move, 0u);
+                if (w->local_abort) {
+                    return 0;
+                }
+                if (ver >= beta) {
+                    return beta;
+                }
             }
         }
 
@@ -1376,20 +1502,33 @@ static int alphabeta(search_worker *w, chess *board, u64 hash, int depth, int al
                 path_len + 1, next_hm, true, false, m, 0u);
         } else {
             int r = 0;
-            if (depth >= 3 && legal_searched >= 2 && is_quiet && !checked && !gives_check) {
+            if (depth >= 3 && legal_searched >= 2 && !checked && !gives_check) {
                 int di = (depth < 63) ? depth : 63;
                 int mi = (legal_searched < 63) ? legal_searched : 63;
-                r = g_lmr_table[di][mi];
-                if (is_pv) {
-                    r--;
+                if (is_quiet) {
+                    r = g_lmr_table[di][mi];
+                    if (is_pv) {
+                        r--;
+                    }
+                    if (!improving) {
+                        r++;
+                    }
+                    if (cut_node) {
+                        r += g_sp.lmr_cut;
+                    }
+                    if (is_special_quiet) {
+                        r--;
+                    }
+                    r -= quiet_hval / g_sp.hist_lmr_div;
+                } else if (is_cap && !is_promo && move_score < 1050000) {
+                    // Capture LMR for neutral / losing captures scaled by capture history
+                    int vic_pt = is_ep ? 0 : piece_type_idx(cap);
+                    int ch = w->cap_history[sp_pt][dst][vic_pt];
+                    r = (g_lmr_table[di][mi] - 1) - (ch / g_sp.lmr_cap_div);
+                    if (cut_node) {
+                        r++;
+                    }
                 }
-                if (!improving) {
-                    r++;
-                }
-                if (is_special_quiet) {
-                    r--;
-                }
-                r -= quiet_hval / g_sp.hist_lmr_div;
                 if (r < 0) {
                     r = 0;
                 }
@@ -1406,7 +1545,16 @@ static int alphabeta(search_worker *w, chess *board, u64 hash, int depth, int al
             }
 
             if (score > alpha && !w->local_abort) {
-                score = -alphabeta(w, &child, child_hash, new_depth, -alpha - 1, -alpha, ply + 1,
+                // Deeper / shallower post-LMR re-search adjustment (Stockfish trick)
+                int re_depth = new_depth;
+                if (r > 0 && best_score > -MATE_BOUND) {
+                    if (score > best_score + 50 + 2 * new_depth) {
+                        re_depth++;
+                    } else if (score < best_score + new_depth) {
+                        re_depth--;
+                    }
+                }
+                score = -alphabeta(w, &child, child_hash, re_depth, -alpha - 1, -alpha, ply + 1,
                     path_len + 1, next_hm, true, !cut_node, m, 0u);
                 if (score > alpha && score < beta && !w->local_abort) {
                     score = -alphabeta(w, &child, child_hash, new_depth, -beta, -alpha, ply + 1,
@@ -1453,6 +1601,9 @@ static int alphabeta(search_worker *w, chess *board, u64 hash, int depth, int al
                             update_hist_entry(
                                 &w->cont4_history[prev4_pt][prev4_to][sp_pt][dst], bonus);
                         }
+                        if (ply < 4) {
+                            update_hist_entry(&w->low_ply_hist[ply][src][dst], bonus);
+                        }
                         for (int q = 0; q < q_tried; q++) {
                             u64 qm = quiets_tried[q];
                             int qs = get_start_offset(qm);
@@ -1471,6 +1622,9 @@ static int alphabeta(search_worker *w, chess *board, u64 hash, int depth, int al
                             if (prev4_pt >= 0) {
                                 update_hist_entry(
                                     &w->cont4_history[prev4_pt][prev4_to][qpt][qd], -bonus);
+                            }
+                            if (ply < 4) {
+                                update_hist_entry(&w->low_ply_hist[ply][qs][qd], -bonus);
                             }
                         }
                     } else if (is_cap) {
@@ -1519,6 +1673,11 @@ static int alphabeta(search_worker *w, chess *board, u64 hash, int depth, int al
                 update_corr_hist(&w->corr_hist[side][corr_idx], diff, depth);
                 update_corr_hist(&w->nonpawn_corr[side][0][w_np_idx], diff, depth);
                 update_corr_hist(&w->nonpawn_corr[side][1][b_np_idx], diff, depth);
+                update_corr_hist(&w->minor_corr[side][minor_idx], diff, depth);
+                update_corr_hist(&w->major_corr[side][major_idx], diff, depth);
+                if (prev_corr_pt >= 0) {
+                    update_corr_hist(&w->cont_corr[side][prev_corr_pt][prev_corr_to], diff, depth);
+                }
             }
         }
 
@@ -1945,7 +2104,26 @@ search_result engine_search_timed(
 }
 
 search_result engine_search(engine *eng, const full_chess *game, int max_depth, int time_ms) {
+    if (eng && eng->main_worker) {
+        eng->main_worker->node_limit = 0ull;
+    }
     return engine_search_timed(eng, game, max_depth, time_ms, time_ms);
+}
+
+search_result engine_search_nodes(
+    engine *eng, const full_chess *game, int max_depth, u64 max_nodes) {
+    if (!eng || !eng->main_worker) {
+        search_result z;
+        memset(&z, 0, sizeof(z));
+        return z;
+    }
+    int saved_threads = eng->num_threads;
+    eng->num_threads = 1; // deterministic single-thread node cap
+    eng->main_worker->node_limit = max_nodes;
+    search_result r = engine_search_timed(eng, game, max_depth, 0, 0);
+    eng->main_worker->node_limit = 0ull;
+    eng->num_threads = saved_threads;
+    return r;
 }
 
 int engine_search_multipv(engine *eng, const full_chess *game, int max_depth, int time_ms,

@@ -909,7 +909,9 @@ az_arena *az_arena_create(const az_config *cfg) {
         if (ncpu < 1) {
             ncpu = 1;
         }
-        req_threads = (int) (ncpu > 8 ? 8 : ncpu);
+        // Leave 2 threads for PyTorch/CUDA host DMA; use up to 10 C MCTS worker threads on 12T CPUs
+        long target = (ncpu > 4) ? (ncpu - 2) : ncpu;
+        req_threads = (int) (target > 10 ? 10 : target);
     }
     if (cfg->num_games < 8) {
         req_threads = 1;

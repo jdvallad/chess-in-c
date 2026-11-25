@@ -27,3 +27,9 @@ data/az_*/
 *.pth
 *.npz
 *.log
+
+# Project 3000 datagen, Syzygy tablebases & large NNUE weights
+data/datagen*.bin
+data/syzygy/
+data/titan_v6_*.nnue
+data/chess_net_zero_*.nnue

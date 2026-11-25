@@ -94,6 +94,8 @@ class CompactReplayBuffer:
             self.wdl[sl] = wdl
             self.ml[sl] = ml
             self.is_full[sl] = is_full
+            # Never grow self.size past the highest slot actually written!
+            self.size = max(self.size, end)
         else:
             first = self.max_size - self.head
             rem = n - first
@@ -112,9 +114,9 @@ class CompactReplayBuffer:
             self.wdl[:rem] = wdl[first:]
             self.ml[:rem] = ml[first:]
             self.is_full[:rem] = is_full[first:]
+            self.size = self.max_size
 
         self.head = end % self.max_size
-        self.size = min(self.max_size, self.size + n)
         return n
 
     def sample_minibatch(self, batch_size: int, rng: np.random.Generator):
@@ -160,26 +162,54 @@ class CompactReplayBuffer:
         try:
             with np.load(path) as data:
                 p = data["planes"]
-                n = min(int(p.shape[0]), self.max_size)
-                if n <= 0:
+                wdl = data["wdl"]
+                n_raw = int(p.shape[0])
+                if n_raw <= 0:
                     return 0
+
+                # Auto-repair: purge any corrupted all-zero rows (e.g. from buffer expansion)
+                valid_mask = (wdl.sum(axis=1) > 0.5) & (p[:, :12].reshape(n_raw, -1).sum(axis=1) > 0)
+                n_valid = int(valid_mask.sum())
+                if n_valid <= 0:
+                    return 0
+
+                use_filter = n_valid < n_raw
+                idx = np.nonzero(valid_mask)[0] if use_filter else None
+                if n_valid > self.max_size:
+                    if idx is not None:
+                        idx = idx[-self.max_size :]
+                    else:
+                        idx = slice(n_raw - self.max_size, n_raw)
+                    n = self.max_size
+                else:
+                    n = n_valid
+
+                sel = idx if idx is not None else slice(0, n)
                 old_c = int(p.shape[1])
+                p_sel = p[sel]
                 if old_c == AZ_PLANES:
-                    self.planes[:n] = p[:n]
+                    self.planes[:n] = p_sel
                 elif old_c < AZ_PLANES:
                     self.planes[:n].fill(0)
-                    self.planes[:n, :old_c] = p[:n]
+                    self.planes[:n, :old_c] = p_sel
                 else:
-                    self.planes[:n] = p[:n, :AZ_PLANES]
-                self.pol_acts[:n] = data["pol_acts"][:n]
-                self.pol_probs[:n] = data["pol_probs"][:n]
-                self.pol_n[:n] = data["pol_n"][:n]
-                self.wdl[:n] = data["wdl"][:n]
-                self.ml[:n] = data["ml"][:n]
-                self.is_full[:n] = data["is_full"][:n]
+                    self.planes[:n] = p_sel[:, :AZ_PLANES]
+
+                self.pol_acts[:n] = data["pol_acts"][sel]
+                self.pol_probs[:n] = data["pol_probs"][sel]
+                self.pol_n[:n] = data["pol_n"][sel]
+                self.wdl[:n] = wdl[sel]
+                self.ml[:n] = data["ml"][sel]
+                self.is_full[:n] = data["is_full"][sel]
                 self.size = n
-                h = int(data["head"]) if "head" in data else (n % self.max_size)
-                self.head = h % self.max_size
+
+                # CRITICAL: When buffer expanded (n < max_size) or was compacted/repaired,
+                # head MUST point to `n` so new positions append into [n..max_size) cleanly!
+                if n < self.max_size or use_filter:
+                    self.head = n % self.max_size
+                else:
+                    h = int(data["head"]) if "head" in data else 0
+                    self.head = h % self.max_size
                 return n
         except Exception:
             return 0
@@ -319,13 +349,160 @@ def launch_gpu_eval(
 
 
 def scheduled_lr(base_lr: float, gen_num: int) -> float:
-    """Smooth warmup + cosine decay to floor (8% of base_lr) across multi-day runs."""
+    """Multi-day stretched Cosine LR with zero shock on resume at Gen 1,500+.
+    - Gen 0..12:     linear warmup 25% -> 100% of base_lr
+    - Gen 12..1500:  smooth cosine 100% -> 40% of base_lr (~0.00060)
+    - Gen 1500..5500: extended fine-tune cosine 40% -> 12% floor (~0.00018)
+    """
     if gen_num < 12:
         return base_lr * (0.25 + 0.75 * (gen_num / 12.0))
-    decay_gens = 2500.0
-    t = min(1.0, max(0.0, (gen_num - 12.0) / decay_gens))
-    cos_factor = 0.5 * (1.0 + float(np.cos(np.pi * t)))
-    return base_lr * (0.08 + 0.92 * cos_factor)
+    if gen_num < 1500:
+        t = (gen_num - 12.0) / 2500.0
+        cos_factor = 0.5 * (1.0 + float(np.cos(np.pi * t)))
+        return base_lr * (0.08 + 0.92 * cos_factor)
+    # Continuous handoff from Gen 1500 value (~0.402 * base_lr) down to 0.12 floor at Gen 5500
+    t0 = (1500.0 - 12.0) / 2500.0
+    start_f = 0.08 + 0.92 * 0.5 * (1.0 + float(np.cos(np.pi * t0)))
+    floor_f = 0.12
+    t2 = min(1.0, max(0.0, (gen_num - 1500.0) / 4000.0))
+    cos2 = 0.5 * (1.0 + float(np.cos(np.pi * t2)))
+    return base_lr * (floor_f + (start_f - floor_f) * cos2)
+
+
+def evaluate_training_completion(
+    gen: int,
+    total_games: int,
+    cur_lr: float,
+    base_lr: float,
+    history: list,
+    flag_path: str,
+) -> dict:
+    """Evaluate 4-gate AlphaZero/KataGo convergence criteria for Zero-C v2.
+
+    Training is marked COMPLETE via either:
+      - Path A (Full Schedule): Gen >= 5500 AND >= 500,000 games (full cosine fine-tune complete), OR
+      - Path B (Verified Plateau): All 4 gates satisfied simultaneously:
+          1. Experience: >= 500,000 pure self-play games
+          2. LR Anneal:  LR <= 0.00026 (final ~20% fine-tune tail of stretched cosine schedule)
+          3. Policy Plateau: over 150 gens (50-gen rolling avg vs 150 gens ago),
+             Policy Loss drop < 0.015 AND Policy Top-1 Acc gain < +0.4%
+          4. Endgame Stability: Moves-Left Loss drop < 0.003 AND avg_plies >= 85
+    """
+    MIN_GAMES = 500000
+    SCHEDULE_END_GEN = 5500
+    LR_TAIL_THRESH = max(0.00026, base_lr * 0.175)
+    WINDOW = 50
+    STRIDE = 150
+
+    flag_exists = os.path.exists(flag_path)
+
+    # Gate 1: Minimum self-play experience
+    g1_pass = total_games >= MIN_GAMES
+    g1_pct = min(1.0, total_games / float(MIN_GAMES))
+
+    # Gate 2: Cosine LR maturity
+    g2_pass = (cur_lr <= LR_TAIL_THRESH) or (gen >= SCHEDULE_END_GEN)
+    lr_start = max(base_lr * 0.40, LR_TAIL_THRESH + 1e-6)
+    g2_pct = 1.0 if g2_pass else max(0.0, min(1.0, (lr_start - cur_lr) / max(1e-6, lr_start - LR_TAIL_THRESH)))
+
+    # Gate 3 & 4: Rolling plateau over 150 generations (50-gen recent mean vs 50-gen baseline 150 gens earlier)
+    pol_loss_drop = None
+    pol_acc_gain = None
+    ml_loss_drop = None
+    avg_plies_recent = None
+    has_plateau_window = len(history) >= (STRIDE + WINDOW)
+
+    if has_plateau_window:
+        recent = history[-WINDOW:]
+        older = history[-(STRIDE + WINDOW) : -STRIDE]
+        r_pol = float(np.mean([h.get("pol_loss", 0.0) for h in recent]))
+        o_pol = float(np.mean([h.get("pol_loss", 0.0) for h in older]))
+        r_acc = float(np.mean([h.get("pol_acc", 0.0) for h in recent]))
+        o_acc = float(np.mean([h.get("pol_acc", 0.0) for h in older]))
+        r_ml = float(np.mean([h.get("ml_loss", 0.0) for h in recent]))
+        o_ml = float(np.mean([h.get("ml_loss", 0.0) for h in older]))
+        avg_plies_recent = float(np.mean([h.get("avg_plies", 0.0) for h in recent]))
+        pol_loss_drop = round(o_pol - r_pol, 4)
+        pol_acc_gain = round(r_acc - o_acc, 2)
+        ml_loss_drop = round(o_ml - r_ml, 4)
+
+    g3_pass = bool(
+        has_plateau_window
+        and pol_loss_drop is not None
+        and pol_acc_gain is not None
+        and pol_loss_drop < 0.015
+        and pol_acc_gain < 0.40
+    )
+    g4_pass = bool(
+        has_plateau_window
+        and ml_loss_drop is not None
+        and avg_plies_recent is not None
+        and ml_loss_drop < 0.003
+        and avg_plies_recent >= 85.0
+    )
+
+    path_a_done = (gen >= SCHEDULE_END_GEN) and g1_pass
+    path_b_done = g1_pass and g2_pass and g3_pass and g4_pass
+    converged_now = path_a_done or path_b_done
+    is_complete = bool(flag_exists or converged_now)
+
+    # Weighted progress meter (0..100%)
+    if is_complete:
+        progress_pct = 100.0
+    else:
+        sched_pct = min(1.0, gen / float(SCHEDULE_END_GEN))
+        plat_bonus = (0.10 if g3_pass else 0.0) + (0.05 if g4_pass else 0.0)
+        progress_pct = round(min(99.0, 100.0 * (0.45 * g1_pct + 0.40 * max(g2_pct, sched_pct) + plat_bonus)), 1)
+
+    if is_complete:
+        status = "complete"
+        if path_a_done:
+            reason = f"Full cosine fine-tune complete at Gen {gen:,} ({total_games:,} games)."
+        elif path_b_done:
+            reason = f"All 4 convergence gates satisfied at Gen {gen:,} — diminishing returns confirmed!"
+        else:
+            reason = f"Zero-C v2 graduated (v2_complete.flag active) — 4 Mythic Hybrids unlocked!"
+    elif g1_pass and (g2_pass or g3_pass):
+        status = "nearing"
+        reason = "Past 500k games and entering final fine-tune/plateau window."
+    else:
+        status = "training"
+        reason = "Actively climbing — network is still absorbing new self-play discoveries."
+
+    return {
+        "status": status,
+        "is_complete": is_complete,
+        "converged_now": converged_now,
+        "flag_exists": flag_exists,
+        "progress_pct": progress_pct,
+        "reason": reason,
+        "gates": {
+            "experience": {
+                "passed": g1_pass,
+                "current": total_games,
+                "target": MIN_GAMES,
+            },
+            "lr_anneal": {
+                "passed": g2_pass,
+                "current_lr": round(float(cur_lr), 6),
+                "target_lr": round(float(LR_TAIL_THRESH), 6),
+                "gen": gen,
+                "schedule_end_gen": SCHEDULE_END_GEN,
+            },
+            "policy_plateau": {
+                "passed": g3_pass,
+                "ready": has_plateau_window,
+                "pol_loss_drop_150g": pol_loss_drop,
+                "pol_acc_gain_150g": pol_acc_gain,
+            },
+            "endgame_stability": {
+                "passed": g4_pass,
+                "ready": has_plateau_window,
+                "ml_loss_drop_150g": ml_loss_drop,
+                "avg_plies": round(avg_plies_recent, 1) if avg_plies_recent is not None else None,
+            },
+        },
+    }
 
 
 def prune_old_checkpoints(ckpt_dir: str, keep_recent: int = 25, milestone_step: int = 10):
@@ -442,13 +619,20 @@ def main():
     ap.add_argument("--replay-size", type=int, default=1200000)
     ap.add_argument("--resign-threshold", type=float, default=-0.94)
     ap.add_argument("--mcts-threads", type=int, default=0, help="0 = auto CPU cores")
+    ap.add_argument("--full-throttle", action="store_true", help="Max GPU+CPU+RAM overnight preset")
     ap.add_argument("--lr", type=float, default=0.0015)
     ap.add_argument("--max-gens", type=int, default=0, help="0 = continuous until stopped")
     ap.add_argument("--data-dir", default="data/az")
     ap.add_argument("--reset", action="store_true")
     args = ap.parse_args()
+    if args.full_throttle:
+        args.games = max(args.games, 768)
+        args.replay_size = max(args.replay_size, 2000000)
+        args.batch_size = max(args.batch_size, 768)
     if args.train_steps <= 0:
-        args.train_steps = max(120, int(round(args.games_per_gen * 1.1)))
+        # Keep ~400 trained samples per new self-play game (~4x replay ratio, KataGo sweet spot)
+        # regardless of batch_size or games_per_gen so WDL/ML heads never overfit a 2M buffer!
+        args.train_steps = max(72, int(round((args.games_per_gen * 400.0) / max(64, args.batch_size))))
 
     os.makedirs(args.data_dir, exist_ok=True)
     ckpt_dir = os.path.join(args.data_dir, "checkpoints")
@@ -456,6 +640,7 @@ def main():
     status_path = os.path.join(args.data_dir, "status.json")
     latest_path = os.path.join(args.data_dir, "latest.pt")
     replay_path = os.path.join(args.data_dir, "replay.npz")
+    complete_flag_path = os.path.join(args.data_dir, "v2_complete.flag")
 
     if args.reset:
         for fn in os.listdir(ckpt_dir):
@@ -610,6 +795,10 @@ def main():
                     snaps.append(s)
             gid_offset += ar.cfg.num_games
 
+        completion = evaluate_training_completion(
+            gen, total_games, cur_lr, float(args.lr), history, complete_flag_path
+        )
+
         payload = {
             "ok": True,
             "running": running_flag,
@@ -635,6 +824,7 @@ def main():
                 "full_sims": args.full_sims,
                 "full_prob": float(args.full_prob),
                 "games_per_gen": args.games_per_gen,
+                "full_throttle": bool(args.full_throttle),
             },
             "gen": gen,
             "gen_games": gen_games,
@@ -649,6 +839,7 @@ def main():
             "games_per_hr": round(games_per_hr, 1),
             "elapsed_sec": round(time.time() - start_wall, 1),
             "outcomes": {"white": total_w, "draw": total_d, "black": total_b},
+            "completion": completion,
             "history": history[-1500:],
             "checkpoints": ckpt_meta[-200:],
             "live_games": snaps,
@@ -846,6 +1037,22 @@ def main():
                 save_checkpoint(latest_path, model, optimizer, meta_blob)
                 if gen % 25 == 0:
                     replay.save(replay_path)
+                # Auto-stamp v2_complete.flag the moment convergence criteria are met!
+                comp_check = evaluate_training_completion(
+                    gen, total_games, cur_lr, float(args.lr), history, complete_flag_path
+                )
+                if comp_check["converged_now"] and not os.path.exists(complete_flag_path):
+                    atomic_write_json(
+                        complete_flag_path,
+                        {
+                            "completed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                            "gen": gen,
+                            "total_games": total_games,
+                            "pol_acc": metrics["pol_acc"],
+                            "pol_loss": metrics["pol_loss"],
+                            "reason": comp_check["reason"],
+                        },
+                    )
                 gen_games = gen_w = gen_d = gen_b = gen_plies = 0
                 phase = "selfplay"
                 write_status(True, f"Completed Gen {gen} (loss={metrics['loss']}, pol_acc={metrics['pol_acc']}%)")
