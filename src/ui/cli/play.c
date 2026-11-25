@@ -449,6 +449,7 @@ static void print_game_over_reason(const full_chess *game, char *out, size_t out
 
 static const char *class_badge(review_move_class cls) {
     switch (cls) {
+    case REV_BRILLIANT: return "\033[1;36m!! Brilliant" C_RESET;
     case REV_BEST: return C_GREEN C_BOLD "★ Best      " C_RESET;
     case REV_GOOD: return C_CYAN "✓ Good      " C_RESET;
     case REV_INACCURACY: return C_YELLOW "?! Inacc.   " C_RESET;
@@ -550,6 +551,8 @@ static void run_game_review(engine *eng, const full_chess *game) {
     printf("  %-14s  %10s  %10s\n", "Perf. Tier", review_elo_tier(rev.white.est_elo),
         review_elo_tier(rev.black.est_elo));
     printf("  %-14s  %10d  %10d\n", "Avg CP Loss", rev.white.acpl, rev.black.acpl);
+    printf("  \033[1;36m%-14s" C_RESET "  %10d  %10d\n", "!! Brilliant",
+        rev.white.counts[REV_BRILLIANT], rev.black.counts[REV_BRILLIANT]);
     printf("  " C_GREEN "%-14s" C_RESET "  %10d  %10d\n", "★ Best", rev.white.counts[REV_BEST],
         rev.black.counts[REV_BEST]);
     printf("  " C_CYAN "%-14s" C_RESET "  %10d  %10d\n", "✓ Good", rev.white.counts[REV_GOOD],

@@ -46,9 +46,9 @@ def atomic_write_json(path: str, data: dict):
 
 
 class CompactReplayBuffer:
-    """Fast, vectorized, disk-persistent NumPy ring buffer for Zero-C training."""
+    """Fast, vectorized, disk-persistent NumPy ring buffer for Zero-C v2 training."""
 
-    def __init__(self, max_size: int = 240000):
+    def __init__(self, max_size: int = 1200000):
         self.max_size = int(max_size)
         self.planes = np.empty((self.max_size, AZ_PLANES, 8, 8), dtype=np.uint8)
         self.pol_acts = np.zeros((self.max_size, REPLAY_MAX_POL), dtype=np.int16)
@@ -163,7 +163,14 @@ class CompactReplayBuffer:
                 n = min(int(p.shape[0]), self.max_size)
                 if n <= 0:
                     return 0
-                self.planes[:n] = p[:n]
+                old_c = int(p.shape[1])
+                if old_c == AZ_PLANES:
+                    self.planes[:n] = p[:n]
+                elif old_c < AZ_PLANES:
+                    self.planes[:n].fill(0)
+                    self.planes[:n, :old_c] = p[:n]
+                else:
+                    self.planes[:n] = p[:n, :AZ_PLANES]
                 self.pol_acts[:n] = data["pol_acts"][:n]
                 self.pol_probs[:n] = data["pol_probs"][:n]
                 self.pol_n[:n] = data["pol_n"][:n]
@@ -312,16 +319,13 @@ def launch_gpu_eval(
 
 
 def scheduled_lr(base_lr: float, gen_num: int) -> float:
-    """Smooth AlphaZero learning-rate schedule across long overnight runs."""
-    if gen_num < 60:
-        return base_lr
-    if gen_num < 150:
-        return base_lr * 0.65
-    if gen_num < 300:
-        return base_lr * 0.35
-    if gen_num < 600:
-        return base_lr * 0.20
-    return base_lr * 0.10
+    """Smooth warmup + cosine decay to floor (8% of base_lr) across multi-day runs."""
+    if gen_num < 12:
+        return base_lr * (0.25 + 0.75 * (gen_num / 12.0))
+    decay_gens = 2500.0
+    t = min(1.0, max(0.0, (gen_num - 12.0) / decay_gens))
+    cos_factor = 0.5 * (1.0 + float(np.cos(np.pi * t)))
+    return base_lr * (0.08 + 0.92 * cos_factor)
 
 
 def prune_old_checkpoints(ckpt_dir: str, keep_recent: int = 25, milestone_step: int = 10):
@@ -426,21 +430,25 @@ def main():
     signal.signal(signal.SIGINT, _handle_stop)
     signal.signal(signal.SIGTERM, _handle_stop)
 
-    ap = argparse.ArgumentParser(description="Zero-C AlphaZero Self-Play Trainer")
-    ap.add_argument("--arch", choices=list(PRESET_ARCHS.keys()), default="standard")
+    ap = argparse.ArgumentParser(description="Zero-C v2 AlphaZero Self-Play Trainer")
+    ap.add_argument("--arch", choices=list(PRESET_ARCHS.keys()), default="pro")
     ap.add_argument("--games", type=int, default=256, help="Total concurrent C MCTS self-play games")
-    ap.add_argument("--fast-sims", type=int, default=36)
-    ap.add_argument("--full-sims", type=int, default=200)
+    ap.add_argument("--fast-sims", type=int, default=48)
+    ap.add_argument("--full-sims", type=int, default=300)
     ap.add_argument("--full-prob", type=float, default=0.25)
     ap.add_argument("--games-per-gen", type=int, default=128)
-    ap.add_argument("--train-steps", type=int, default=120)
-    ap.add_argument("--batch-size", type=int, default=256)
+    ap.add_argument("--train-steps", type=int, default=0, help="0 = auto-scale with games-per-gen")
+    ap.add_argument("--batch-size", type=int, default=512)
+    ap.add_argument("--replay-size", type=int, default=1200000)
+    ap.add_argument("--resign-threshold", type=float, default=-0.94)
     ap.add_argument("--mcts-threads", type=int, default=0, help="0 = auto CPU cores")
     ap.add_argument("--lr", type=float, default=0.0015)
     ap.add_argument("--max-gens", type=int, default=0, help="0 = continuous until stopped")
     ap.add_argument("--data-dir", default="data/az")
     ap.add_argument("--reset", action="store_true")
     args = ap.parse_args()
+    if args.train_steps <= 0:
+        args.train_steps = max(120, int(round(args.games_per_gen * 1.1)))
 
     os.makedirs(args.data_dir, exist_ok=True)
     ckpt_dir = os.path.join(args.data_dir, "checkpoints")
@@ -473,6 +481,7 @@ def main():
     total_w = total_d = total_b = 0
     history = []
     ckpt_meta = []
+    cur_lr = scheduled_lr(args.lr, 0)
 
     if os.path.exists(latest_path) and not args.reset:
         model, ckpt = load_checkpoint(latest_path, device)
@@ -551,17 +560,19 @@ def main():
             fpu_reduction=0.25,
             dirichlet_alpha=0.30,
             dirichlet_eps=0.25,
-            temp_plies=24,
+            temp_plies=16,
             max_plies=300,
             batch_per_game=bpg,
             forced_playouts=1,
             num_threads=args.mcts_threads,
             seed=(base_seed + idx * 0x9E3779B97F4A7C15) & 0xFFFFFFFFFFFFFFFF,
+            resign_threshold=float(args.resign_threshold),
+            tactical_mode=0,  # 100% pure tabula rasa Path-A self-play!
         )
         arenas.append(AzArena(cfg, pinned_torch=torch if use_amp else None))
 
     mcts_threads = arenas[0].num_threads
-    replay = CompactReplayBuffer(max_size=240000)
+    replay = CompactReplayBuffer(max_size=args.replay_size)
     if not args.reset:
         replay.load(replay_path)
 
@@ -631,6 +642,9 @@ def main():
             "total_games": total_games,
             "total_positions": total_positions,
             "replay_size": len(replay),
+            "replay_max": replay.max_size,
+            "lr": round(float(cur_lr), 7),
+            "base_lr": float(args.lr),
             "evals_per_sec": round(evals_per_sec, 1),
             "games_per_hr": round(games_per_hr, 1),
             "elapsed_sec": round(time.time() - start_wall, 1),
@@ -754,7 +768,7 @@ def main():
                 elapsed_hr = max(1e-4, (now - start_wall) / 3600.0)
                 games_per_hr = session_games / elapsed_hr
 
-            if now - last_status_t >= 1.2:
+            if now - last_status_t >= 0.65:
                 last_status_t = now
                 write_status(True, f"Self-play Gen {gen}: {gen_games}/{args.games_per_gen} games")
 
@@ -775,6 +789,9 @@ def main():
                     sync_infer_model(model, infer_model)
                 gen += 1
                 decisive_pct = round(100.0 * (gen_w + gen_b) / max(1, gen_games), 1)
+                white_pct = round(100.0 * gen_w / max(1, gen_games), 1)
+                draw_pct = round(100.0 * gen_d / max(1, gen_games), 1)
+                black_pct = round(100.0 * gen_b / max(1, gen_games), 1)
                 avg_plies = round(gen_plies / max(1, gen_games), 1)
                 hist_row = {
                     "gen": gen,
@@ -786,7 +803,12 @@ def main():
                     "ml_loss": metrics["ml_loss"],
                     "pol_acc": metrics["pol_acc"],
                     "decisive_pct": decisive_pct,
+                    "white_pct": white_pct,
+                    "draw_pct": draw_pct,
+                    "black_pct": black_pct,
                     "avg_plies": avg_plies,
+                    "lr": round(float(cur_lr), 7),
+                    "evals_per_sec": round(evals_per_sec, 1),
                 }
                 history.append(hist_row)
                 ckpt_file = f"gen_{gen:04d}.pt"
@@ -822,7 +844,7 @@ def main():
                 ]
                 meta_blob["checkpoints"] = ckpt_meta[-100:]
                 save_checkpoint(latest_path, model, optimizer, meta_blob)
-                if gen % 5 == 0:
+                if gen % 25 == 0:
                     replay.save(replay_path)
                 gen_games = gen_w = gen_d = gen_b = gen_plies = 0
                 phase = "selfplay"

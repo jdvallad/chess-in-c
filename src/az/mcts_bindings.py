@@ -3,7 +3,7 @@ import ctypes
 import os
 import numpy as np
 
-AZ_PLANES = 18
+AZ_PLANES = 20
 AZ_BOARD_FLOATS = AZ_PLANES * 64
 AZ_NUM_ACTIONS = 64 * 73  # 4672
 MAX_LEGAL_MOVES = 512
@@ -27,6 +27,8 @@ class AzConfig(ctypes.Structure):
         ("forced_playouts", ctypes.c_int),
         ("num_threads", ctypes.c_int),
         ("seed", ctypes.c_uint64),
+        ("resign_threshold", ctypes.c_float),
+        ("tactical_mode", ctypes.c_int),
     ]
 
 
@@ -45,6 +47,7 @@ class AzSample(ctypes.Structure):
 class AzGameSnapshot(ctypes.Structure):
     _fields_ = [
         ("game_id", ctypes.c_int32),
+        ("game_seq", ctypes.c_int32),
         ("ply", ctypes.c_int32),
         ("sims_done", ctypes.c_int32),
         ("sims_target", ctypes.c_int32),
@@ -56,6 +59,7 @@ class AzGameSnapshot(ctypes.Structure):
         ("fen", ctypes.c_char * MAX_FEN_LENGTH),
         ("board", ctypes.c_char * 65),
         ("last_san", ctypes.c_char * 16),
+        ("last_uci", ctypes.c_char * 8),
         ("top_count", ctypes.c_int32),
         ("top_san", (ctypes.c_char * 16) * 3),
         ("top_uci", (ctypes.c_char * 8) * 3),
@@ -356,6 +360,7 @@ class AzArena:
             )
         return {
             "id": int(snap.game_id),
+            "seq": int(snap.game_seq),
             "ply": int(snap.ply),
             "sims_done": int(snap.sims_done),
             "sims_target": int(snap.sims_target),
@@ -367,6 +372,7 @@ class AzArena:
             "fen": snap.fen.decode("utf-8", errors="ignore"),
             "board": snap.board.decode("utf-8", errors="ignore"),
             "last_san": snap.last_san.decode("utf-8", errors="ignore"),
+            "last_uci": snap.last_uci.decode("utf-8", errors="ignore"),
             "top": top,
         }
 

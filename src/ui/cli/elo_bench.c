@@ -71,27 +71,34 @@ int main(int argc, char **argv) {
     }
     printf("  Saving ratings to: %s\n\n", ELO_RATINGS_FILE);
 
-    int printed_done[6] = { 0 };
-    printf("  %-14s %-15s %-11s %-8s %s\n", "Level", "Opponent", "W-D-L", "Score", "Est. Elo");
-    printf("  ------------------------------------------------------------------\n");
+    int printed_done[GAUNTLET_NUM_LEVELS] = { 0 };
+    printf("  %-20s %-15s %-11s %-8s %s\n", "Bot / Level", "Opponent", "W-D-L", "Score", "Est. Elo");
+    printf("  ------------------------------------------------------------------------\n");
 
     struct timespec nap = { 0, 150000000L }; // 150ms poll
     while (true) {
         gauntlet_snapshot(g, &st);
-        for (int i = 0; i < 6; i++) {
+        for (int i = 0; i < GAUNTLET_NUM_LEVELS; i++) {
             const level_progress *lp = &st.levels[i];
             if (lp->state == 2 && !printed_done[i] && lp->done_games > 0) {
                 printed_done[i] = 1;
                 double score
                     = ((double) lp->wins + 0.5 * (double) lp->draws) / (double) lp->done_games;
-                if (lp->is_relative) {
-                    printf("  L%d %-11s %-15s %2d-%2d-%-4d  %5.1f%%   %+d (rel)\n", lp->level,
-                        engine_get_preset(lp->level)->name, lp->opponent_label, lp->wins, lp->draws,
-                        lp->losses, score * 100.0, lp->est_elo);
+                char lbl[32];
+                if (lp->level == GAUNTLET_ZERO_C_LEVEL) {
+                    snprintf(lbl, sizeof(lbl), "Zero-C (AlphaZero)");
                 } else {
-                    printf("  L%d %-11s %-15s %2d-%2d-%-4d  %5.1f%%   ~%d Elo\n", lp->level,
-                        engine_get_preset(lp->level)->name, lp->opponent_label, lp->wins, lp->draws,
-                        lp->losses, score * 100.0, lp->est_elo);
+                    snprintf(lbl, sizeof(lbl), "L%d %s", lp->level,
+                        engine_get_preset(lp->level)->name);
+                }
+                if (lp->is_relative) {
+                    printf("  %-20s %-15s %2d-%2d-%-4d  %5.1f%%   %+d (rel)\n", lbl,
+                        lp->opponent_label, lp->wins, lp->draws, lp->losses, score * 100.0,
+                        lp->est_elo);
+                } else {
+                    printf("  %-20s %-15s %2d-%2d-%-4d  %5.1f%%   ~%d Elo\n", lbl,
+                        lp->opponent_label, lp->wins, lp->draws, lp->losses, score * 100.0,
+                        lp->est_elo);
                 }
                 fflush(stdout);
             }

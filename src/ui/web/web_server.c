@@ -5,6 +5,7 @@
 #include "core/movegen.h"
 #include "core/notation.h"
 #include "core/primitives.h"
+#include "engine/book.h"
 #include "engine/engine.h"
 #include "features/gauntlet.h"
 #include "features/history.h"
@@ -30,7 +31,9 @@
 #include <time.h>
 #include <unistd.h>
 
-#define AZ_BOT_LEVEL 12
+#define AZ_BOT_LEVEL    12
+#define AZ_V1_BOT_LEVEL 13
+#define AZ_V1_CKPT_PATH "data/az_v1_gen4320/latest.pt"
 
 typedef enum web_mode {
     WMODE_WHITE = 1,
@@ -47,6 +50,7 @@ typedef struct app_state {
     uci_engine *sf;
     uci_engine *sf_ref; // Dedicated full-strength Stockfish objective referee
     uci_engine *az_uci;
+    uci_engine *az_v1_uci; // Dedicated max-strength handle for immortalized Zero-C v1 Champion
     pid_t az_pid;
     bool az_running;
     char az_checkpoint[256];
@@ -65,6 +69,7 @@ typedef struct app_state {
     int black_level;
     int custom_elo; // 0 = preset level, 800..2600 = calibrated custom Elo slider
     int eval_white_cp;
+    u64 book_rng;
     u64 mainline_moves[MAX_GAME_LENGTH];
     char mainline_san[MAX_GAME_LENGTH][16];
     int mainline_len;
@@ -243,7 +248,7 @@ static int json_get_int(const char *json, const char *key, int default_val) {
 
 static int max_allowed_level(const app_state *st) {
     (void) st;
-    return AZ_BOT_LEVEL;
+    return AZ_V1_BOT_LEVEL;
 }
 
 static bool az_python_path(char *out, size_t out_sz) {
@@ -258,6 +263,10 @@ static bool az_python_path(char *out, size_t out_sz) {
 static bool az_is_available(void) {
     return (access("build/libaz_mcts.so", R_OK) == 0)
            && (access("src/az/az_uci_run.sh", X_OK) == 0);
+}
+
+static bool az_v1_is_available(void) {
+    return az_is_available() && (access(AZ_V1_CKPT_PATH, R_OK) == 0);
 }
 
 static void az_check_alive(app_state *st) {
@@ -396,6 +405,21 @@ static uci_engine *az_ensure_uci(app_state *st) {
     return st->az_uci;
 }
 
+static uci_engine *az_ensure_v1_uci(app_state *st) {
+    if (!az_v1_is_available()) {
+        return NULL;
+    }
+    if (!st->az_v1_uci) {
+        st->az_v1_uci = uci_create("src/az/az_uci_run.sh");
+        if (st->az_v1_uci) {
+            uci_set_option(st->az_v1_uci, "Checkpoint", AZ_V1_CKPT_PATH);
+            uci_set_option(st->az_v1_uci, "Simulations", "1000");
+            uci_set_option(st->az_v1_uci, "TacticalHybrid", "true");
+        }
+    }
+    return st->az_v1_uci;
+}
+
 static void handle_az_status_json(app_state *st, strbuf *sb) {
     az_check_alive(st);
     bool lib_ok = (access("build/libaz_mcts.so", R_OK) == 0);
@@ -454,7 +478,9 @@ static void handle_az_status_json(app_state *st, strbuf *sb) {
 }
 
 static void format_bot_name(const app_state *st, int level, char *out, size_t out_size) {
-    if (level == AZ_BOT_LEVEL) {
+    if (level == AZ_V1_BOT_LEVEL) {
+        snprintf(out, out_size, "Zero-C v1 Champion (Gen 4320)");
+    } else if (level == AZ_BOT_LEVEL) {
         if (st->az_checkpoint[0] != '\0') {
             const char *base = strrchr(st->az_checkpoint, '/');
             base = base ? (base + 1) : st->az_checkpoint;
@@ -881,11 +907,18 @@ static void serialize_state_json(
         sb_json_str(sb, sp->desc);
         sb_append(sb, "}");
     }
+    const level_progress *az_lp = &gs.levels[GAUNTLET_ZERO_C_LEVEL - 1];
     sb_printf(sb,
-        ",{\"level\":%d,\"engine\":\"az\",\"available\":%s,\"has_elo\":false,"
-        "\"is_relative\":false,\"est_elo\":0,\"name\":\"Zero-C (AlphaZero)\","
-        "\"desc\":\"Pure rules-only self-play MCTS + SE-ResNet neural engine\"}",
-        AZ_BOT_LEVEL, az_is_available() ? "true" : "false");
+        ",{\"level\":%d,\"engine\":\"az\",\"available\":%s,\"has_elo\":%s,"
+        "\"is_relative\":%s,\"est_elo\":%d,\"name\":\"Zero-C v2 (Latest)\","
+        "\"desc\":\"Active Zero-C AlphaZero self-play MCTS + SE-ResNet neural engine\"}",
+        AZ_BOT_LEVEL, az_is_available() ? "true" : "false", az_lp->has_elo ? "true" : "false",
+        az_lp->is_relative ? "true" : "false", az_lp->est_elo);
+    sb_printf(sb,
+        ",{\"level\":%d,\"engine\":\"az\",\"available\":%s,\"has_elo\":true,"
+        "\"is_relative\":false,\"est_elo\":1276,\"name\":\"Zero-C v1 Champion (Gen 4320 • Max)\","
+        "\"desc\":\"Immortalized v1 6x96 SE-ResNet (554k self-play games, 1000-sim Hybrid MCTS)\"}",
+        AZ_V1_BOT_LEVEL, az_v1_is_available() ? "true" : "false");
     sb_append(sb, "],\"opening\":");
     sb_json_str(sb, (st->mode == WMODE_PUZZLE)
                         ? "Tactical Puzzle"
@@ -923,10 +956,11 @@ static void serialize_state_json(
 
 static void serialize_gauntlet_json(const gauntlet_status *gs, strbuf *sb) {
     sb_printf(sb,
-        "{\"ok\":true,\"running\":%s,\"vs_stockfish\":%s,\"stop_requested\":%s,"
-        "\"num_threads\":%d,\"cpu_cores\":%d,\"games_per_level\":%d,"
+        "{\"ok\":true,\"running\":%s,\"calc_mode\":%s,\"vs_stockfish\":%s,\"az_available\":%s,"
+        "\"stop_requested\":%s,\"num_threads\":%d,\"cpu_cores\":%d,\"games_per_level\":%d,"
         "\"completed_games\":%d,\"scheduled_games\":%d,\"elapsed_sec\":%.1f,\"opponent\":",
-        gs->running ? "true" : "false", gs->vs_stockfish ? "true" : "false",
+        gs->running ? "true" : "false", gs->calc_mode ? "true" : "false",
+        gs->vs_stockfish ? "true" : "false", gs->az_available ? "true" : "false",
         gs->stop_requested ? "true" : "false", gs->num_threads, gs->cpu_cores, gs->games_per_level,
         gs->completed_games_total, gs->scheduled_games_total, gs->elapsed_sec);
     sb_json_str(sb, gs->opponent_name);
@@ -936,9 +970,10 @@ static void serialize_gauntlet_json(const gauntlet_status *gs, strbuf *sb) {
     sb_json_str(sb, ELO_RATINGS_FILE);
 
     sb_append(sb, ",\"levels\":[");
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < GAUNTLET_NUM_LEVELS; i++) {
         const level_progress *lp = &gs->levels[i];
-        const difficulty_preset *pr = engine_get_preset(i + 1);
+        const char *lname = gauntlet_level_name(i + 1);
+        const char *eng_tag = (i + 1 == GAUNTLET_ZERO_C_LEVEL) ? "az" : "c";
         const char *st_str
             = (lp->state == 1)
                   ? "running"
@@ -946,8 +981,8 @@ static void serialize_gauntlet_json(const gauntlet_status *gs, strbuf *sb) {
         if (i > 0) {
             sb_append(sb, ",");
         }
-        sb_printf(sb, "{\"level\":%d,\"name\":", lp->level);
-        sb_json_str(sb, pr->name);
+        sb_printf(sb, "{\"level\":%d,\"engine\":\"%s\",\"name\":", lp->level, eng_tag);
+        sb_json_str(sb, lname);
         sb_printf(sb, ",\"state\":\"%s\",\"opponent\":", st_str);
         sb_json_str(sb, lp->opponent_label);
         sb_printf(sb,
@@ -956,7 +991,27 @@ static void serialize_gauntlet_json(const gauntlet_status *gs, strbuf *sb) {
             lp->done_games, lp->total_games, lp->wins, lp->draws, lp->losses,
             lp->has_elo ? "true" : "false", lp->is_relative ? "true" : "false", lp->est_elo);
     }
-    sb_append(sb, "],\"workers\":[");
+    sb_append(sb, "],\"calc\":{");
+    const elo_calc_status *cs = &gs->calc;
+    sb_printf(sb, "\"active\":%s,\"subject_level\":%d,\"subject_custom_elo\":%d,\"subject_label\":",
+        cs->active ? "true" : "false", cs->subject_level, cs->subject_custom_elo);
+    sb_json_str(sb, cs->subject_label);
+    sb_printf(sb,
+        ",\"target_ci\":%d,\"max_games\":%d,\"games_done\":%d,\"wins\":%d,\"draws\":%d,"
+        "\"losses\":%d,\"current_anchor\":%d,\"est_elo\":%d,\"ci_half\":%d,\"ci_low\":%d,"
+        "\"ci_high\":%d,\"converged\":%s,\"hit_sf_floor\":%s,\"buckets\":[",
+        cs->target_ci, cs->max_games, cs->games_done, cs->wins, cs->draws, cs->losses,
+        cs->current_anchor, cs->est_elo, cs->ci_half, cs->ci_low, cs->ci_high,
+        cs->converged ? "true" : "false", cs->hit_sf_floor ? "true" : "false");
+    for (int i = 0; i < cs->num_buckets; i++) {
+        if (i > 0) {
+            sb_append(sb, ",");
+        }
+        sb_printf(sb, "{\"anchor\":%d,\"wins\":%d,\"draws\":%d,\"losses\":%d}",
+            cs->buckets[i].anchor_elo, cs->buckets[i].wins, cs->buckets[i].draws,
+            cs->buckets[i].losses);
+    }
+    sb_append(sb, "]},\"workers\":[");
     bool first = true;
     for (int t = 0; t < MAX_GAUNTLET_THREADS; t++) {
         const worker_snapshot *ws = &gs->workers[t];
@@ -1282,7 +1337,7 @@ static void handle_analyze_json(app_state *st, strbuf *sb, bool use_sf) {
 
 static search_result sf_review_eval_cb(const full_chess *pos, void *ctx) {
     uci_engine *sf = (uci_engine *) ctx;
-    uci_search_result ur = uci_search_depth(sf, pos, 13, 60);
+    uci_search_result ur = uci_search_depth(sf, pos, 15, 85);
     return ur.base;
 }
 
@@ -1303,7 +1358,7 @@ static void handle_review_json(app_state *st, strbuf *sb) {
     strbuf moves_json, timeline_json;
     sb_init(&moves_json, 4096);
     sb_init(&timeline_json, 1024);
-    sb_printf(&timeline_json, "[%.4f", engine_win_prob(rev.evals_w[0]));
+    sb_printf(&timeline_json, "[%.4f", rev.win_pcts_w[0] / 100.0);
     sb_append(&moves_json, "[");
 
     for (int p = 0; p < rev.total_plies; p++) {
@@ -1311,7 +1366,7 @@ static void handle_review_json(app_state *st, strbuf *sb) {
         char eval_after_str[16];
         engine_format_eval(rp->eval_after_w, eval_after_str, sizeof(eval_after_str));
 
-        sb_printf(&timeline_json, ",%.4f", engine_win_prob(rp->eval_after_w));
+        sb_printf(&timeline_json, ",%.4f", rev.win_pcts_w[p + 1] / 100.0);
         if (p > 0) {
             sb_append(&moves_json, ",");
         }
@@ -1321,7 +1376,8 @@ static void handle_review_json(app_state *st, strbuf *sb) {
         sb_append(&moves_json, ",\"best\":");
         sb_json_str(&moves_json, rp->best_san);
         sb_printf(&moves_json,
-            ",\"rating\":\"%s\",\"cpl\":%d,\"eval_str\":", review_class_name(rp->cls), rp->cpl);
+            ",\"rating\":\"%s\",\"cpl\":%d,\"win_drop\":%.1f,\"move_acc\":%.1f,\"eval_str\":",
+            review_class_name(rp->cls), rp->cpl, rp->win_drop * 100.0, rp->move_acc);
         sb_json_str(&moves_json, eval_after_str);
         sb_append(&moves_json, "}");
     }
@@ -1332,16 +1388,18 @@ static void handle_review_json(app_state *st, strbuf *sb) {
     sb_printf(sb, "{\"ok\":true,\"engine\":\"%s\",", sf_rev ? "stockfish" : "titan-c");
     sb_printf(sb,
         "\"white\":{\"accuracy\":%.1f,\"acpl\":%d,\"est_elo\":%d,\"elo_tier\":\"%s\","
-        "\"best\":%d,\"good\":%d,\"inaccuracy\":%d,\"mistake\":%d,\"blunder\":%d},",
+        "\"brilliant\":%d,\"best\":%d,\"good\":%d,\"inaccuracy\":%d,\"mistake\":%d,\"blunder\":%d},",
         rev.white.accuracy, rev.white.acpl, rev.white.est_elo, review_elo_tier(rev.white.est_elo),
-        rev.white.counts[REV_BEST], rev.white.counts[REV_GOOD], rev.white.counts[REV_INACCURACY],
-        rev.white.counts[REV_MISTAKE], rev.white.counts[REV_BLUNDER]);
+        rev.white.counts[REV_BRILLIANT], rev.white.counts[REV_BEST], rev.white.counts[REV_GOOD],
+        rev.white.counts[REV_INACCURACY], rev.white.counts[REV_MISTAKE],
+        rev.white.counts[REV_BLUNDER]);
     sb_printf(sb,
         "\"black\":{\"accuracy\":%.1f,\"acpl\":%d,\"est_elo\":%d,\"elo_tier\":\"%s\","
-        "\"best\":%d,\"good\":%d,\"inaccuracy\":%d,\"mistake\":%d,\"blunder\":%d},",
+        "\"brilliant\":%d,\"best\":%d,\"good\":%d,\"inaccuracy\":%d,\"mistake\":%d,\"blunder\":%d},",
         rev.black.accuracy, rev.black.acpl, rev.black.est_elo, review_elo_tier(rev.black.est_elo),
-        rev.black.counts[REV_BEST], rev.black.counts[REV_GOOD], rev.black.counts[REV_INACCURACY],
-        rev.black.counts[REV_MISTAKE], rev.black.counts[REV_BLUNDER]);
+        rev.black.counts[REV_BRILLIANT], rev.black.counts[REV_BEST], rev.black.counts[REV_GOOD],
+        rev.black.counts[REV_INACCURACY], rev.black.counts[REV_MISTAKE],
+        rev.black.counts[REV_BLUNDER]);
 
     // Update or persist reviewed Elo into Game History
     if (st->current_hist_id > 0) {
@@ -1734,18 +1792,22 @@ static void handle_client(int fd, app_state *st) {
     }
     const char *body = req + header_end;
 
-    // Static assets
+    // Static assets & SPA client-side routes (so Back/Forward & F5 refresh work on every URL!)
     if (strcmp(method, "GET") == 0) {
-        if (strcmp(path, "/") == 0 || strcmp(path, "/index.html") == 0) {
-            send_file(fd, "src/ui/web/static/index.html", "text/html; charset=utf-8");
-            return;
-        }
         if (strcmp(path, "/style.css") == 0) {
             send_file(fd, "src/ui/web/static/style.css", "text/css; charset=utf-8");
             return;
         }
         if (strcmp(path, "/app.js") == 0) {
             send_file(fd, "src/ui/web/static/app.js", "application/javascript; charset=utf-8");
+            return;
+        }
+        if (strcmp(path, "/favicon.ico") == 0) {
+            send_http(fd, "204 No Content", "image/x-icon", "", 0);
+            return;
+        }
+        if (strncmp(path, "/api/", 5) != 0) {
+            send_file(fd, "src/ui/web/static/index.html", "text/html; charset=utf-8");
             return;
         }
     }
@@ -1819,6 +1881,10 @@ static void handle_client(int fd, app_state *st) {
             st->black_level = bl;
         }
         st->custom_elo = (celo >= 800 && celo <= 2600) ? celo : 0;
+        char az_ck[256] = "";
+        if (json_get_string(body, "az_checkpoint", az_ck, sizeof(az_ck))) {
+            snprintf(st->az_checkpoint, sizeof(st->az_checkpoint), "%s", az_ck);
+        }
         if (st->mode != WMODE_ANALYSIS) {
             st->custom_names = false;
             // Truncate future mainline if resuming play from an earlier analysis ply
@@ -1957,7 +2023,20 @@ static void handle_client(int fd, app_state *st) {
         int lvl = black_turn ? st->black_level : st->white_level;
         char bot_label[64];
         search_result sr;
-        if (lvl == AZ_BOT_LEVEL) {
+        if (lvl == AZ_V1_BOT_LEVEL) {
+            uci_engine *az1 = az_ensure_v1_uci(st);
+            if (!az1) {
+                sb_append(&sb,
+                    "{\"ok\":false,\"error\":\"Zero-C v1 Champion archive not found at "
+                    "data/az_v1_gen4320/latest.pt.\"}");
+                send_http(fd, "200 OK", "application/json", sb.data, sb.len);
+                sb_free(&sb);
+                return;
+            }
+            format_bot_name(st, lvl, bot_label, sizeof(bot_label));
+            uci_search_result ur = uci_search(az1, st->game, false, 0, 2200);
+            sr = ur.base;
+        } else if (lvl == AZ_BOT_LEVEL) {
             uci_engine *az = az_ensure_uci(st);
             if (!az) {
                 sb_append(&sb,
@@ -1968,13 +2047,25 @@ static void handle_client(int fd, app_state *st) {
                 return;
             }
             format_bot_name(st, lvl, bot_label, sizeof(bot_label));
-            uci_search_result ur = uci_search(az, st->game, false, 0, 750);
+            uci_search_result ur = uci_search(az, st->game, false, 0, 1800);
             sr = ur.base;
         } else if (st->sf && uci_is_stockfish_level(lvl)) {
             const sf_preset *sp = uci_get_preset(lvl);
             snprintf(bot_label, sizeof(bot_label), "%s", sp->name);
-            uci_search_result ur = uci_search_level(st->sf, st->game, lvl);
-            sr = ur.base;
+            // Probe curated GM opening book on first 8 plies so bot-vs-bot games stay varied!
+            u64 bmove = (st->game->move_count < 8 && num_legal_moves(st->game) > 1)
+                            ? book_probe(st->game, NULL, &st->book_rng)
+                            : NULL_MOVE;
+            if (bmove != NULL_MOVE) {
+                memset(&sr, 0, sizeof(sr));
+                sr.best_move = bmove;
+                sr.depth_reached = 0;
+                sr.nodes = 1;
+                sr.elapsed_sec = 0.001;
+            } else {
+                uci_search_result ur = uci_search_level(st->sf, st->game, lvl);
+                sr = ur.base;
+            }
         } else if (st->custom_elo >= 800) {
             snprintf(bot_label, sizeof(bot_label), "Titan-C ~%d Elo", st->custom_elo);
             sr = engine_search_elo(st->eng, st->game, st->custom_elo);
@@ -2064,6 +2155,25 @@ static void handle_client(int fd, app_state *st) {
         gauntlet_snapshot(st->gt, &gs);
         serialize_gauntlet_json(&gs, &sb);
         send_http(fd, "200 OK", "application/json", sb.data, sb.len);
+    } else if (strcmp(method, "POST") == 0 && strcmp(path, "/api/gauntlet/calc") == 0) {
+        int subj_level = json_get_int(body, "subject_level", GAUNTLET_ZERO_C_LEVEL);
+        int custom_elo = json_get_int(body, "custom_elo", 0);
+        int target_ci = json_get_int(body, "target_ci", 90);
+        int max_games = json_get_int(body, "max_games", 40);
+        int threads = json_get_int(body, "threads", 0);
+        char az_ck[256] = "";
+        json_get_string(body, "az_checkpoint", az_ck, sizeof(az_ck));
+        if (!gauntlet_start_calculator(
+                st->gt, subj_level, custom_elo, az_ck, target_ci, max_games, threads, 450)) {
+            sb_append(&sb,
+                "{\"ok\":false,\"error\":\"Could not start Elo Calculator (ensure Stockfish is "
+                "installed and no gauntlet is currently running).\"}");
+        } else {
+            gauntlet_status gs;
+            gauntlet_snapshot(st->gt, &gs);
+            serialize_gauntlet_json(&gs, &sb);
+        }
+        send_http(fd, "200 OK", "application/json", sb.data, sb.len);
     } else if (strcmp(method, "POST") == 0 && strcmp(path, "/api/gauntlet/stop") == 0) {
         gauntlet_stop(st->gt);
         gauntlet_status gs;
@@ -2076,8 +2186,9 @@ static void handle_client(int fd, app_state *st) {
     } else if (strcmp(method, "POST") == 0 && strcmp(path, "/api/az/start") == 0) {
         char arch[32] = "standard";
         json_get_string(body, "arch", arch, sizeof(arch));
-        if (strcmp(arch, "tiny") != 0 && strcmp(arch, "strong") != 0) {
-            snprintf(arch, sizeof(arch), "standard");
+        if (strcmp(arch, "tiny") != 0 && strcmp(arch, "standard") != 0 && strcmp(arch, "strong") != 0
+            && strcmp(arch, "pro") != 0 && strcmp(arch, "master") != 0) {
+            snprintf(arch, sizeof(arch), "pro");
         }
         int games = json_get_int(body, "games", 256);
         int fast_sims = json_get_int(body, "fast_sims", 36);
@@ -2237,6 +2348,11 @@ int main(int argc, char **argv) {
 
     app_state st;
     memset(&st, 0, sizeof(st));
+    {
+        struct timespec bts;
+        clock_gettime(CLOCK_MONOTONIC, &bts);
+        st.book_rng = ((u64) time(NULL) << 32) ^ (u64) bts.tv_nsec ^ 0x9e3779b97f4a7c15ull;
+    }
     st.game = full_chess_create();
     st.game->is_static = true;
     st.eng = engine_create(16);
@@ -2328,6 +2444,7 @@ int main(int argc, char **argv) {
         close(g_server_fd);
     }
     az_stop_training(&st);
+    uci_delete(&st.az_v1_uci);
     uci_delete(&st.az_uci);
     history_free(&st.hist);
     gauntlet_delete(&st.gt);

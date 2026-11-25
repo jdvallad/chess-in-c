@@ -9,9 +9,11 @@ import torch.nn.functional as F
 from mcts_bindings import AZ_PLANES, AZ_NUM_ACTIONS
 
 PRESET_ARCHS = {
-    "tiny": (4, 64),      # ~380k params  (ultra-fast experimentation)
-    "standard": (6, 96),  # ~1.1M params  (ideal single-GPU sweet spot)
-    "strong": (8, 128),   # ~2.5M params  (stronger overnight runs)
+    "tiny": (4, 64),       # ~380k params  (ultra-fast experimentation)
+    "standard": (6, 96),   # ~1.45M params (fast baseline)
+    "strong": (8, 128),    # ~2.6M params  (strong overnight runs)
+    "pro": (10, 128),      # ~3.2M params  (2000-Elo target sweet spot on RTX 2060 SUPER)
+    "master": (12, 160),   # ~5.8M params  (multi-day heavyweight)
 }
 
 
@@ -115,5 +117,19 @@ def save_checkpoint(path: str, model: ZeroCNet, optimizer=None, meta: dict = Non
 def load_checkpoint(path: str, device: torch.device):
     ckpt = torch.load(path, map_location=device, weights_only=False)
     model = ZeroCNet(ckpt["num_blocks"], ckpt["channels"]).to(device)
-    model.load_state_dict(ckpt["state_dict"])
+    sd = ckpt["state_dict"]
+    # Seamless backward compatibility with v1 18-plane checkpoints:
+    # zero-pad extra input channels (repetition + STM planes) on stem.0.weight!
+    stem_k = "stem.0.weight"
+    if stem_k in sd and sd[stem_k].shape[1] < AZ_PLANES:
+        old_w = sd[stem_k]
+        new_w = torch.zeros(
+            (old_w.shape[0], AZ_PLANES, old_w.shape[2], old_w.shape[3]),
+            dtype=old_w.dtype,
+            device=old_w.device,
+        )
+        new_w[:, : old_w.shape[1], :, :] = old_w
+        sd = dict(sd)
+        sd[stem_k] = new_w
+    model.load_state_dict(sd)
     return model, ckpt

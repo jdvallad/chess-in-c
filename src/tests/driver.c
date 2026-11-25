@@ -1096,23 +1096,47 @@ static bool test_engine_upgrades(full_chess *game) {
         ok = false;
     }
 
-    // 10. Post-Game Review: walking into forced mate (-M1) MUST be flagged Blunder
-    set_from_fen(game, "r2qk2r/pp1n1ppp/2p5/6N1/4N3/2N4b/PPP1B1Pq/R4bK1 w kq - 0 12");
-    u64 rev_moves[2];
+    // 10. Post-Game Review: Lichess Win% accuracy + walking into real forced mate (-M2) -> Blunder!
+    set_from_fen(game, "3r2k1/5ppp/8/8/8/8/5PPP/4R1K1 w - - 0 20");
+    u64 rev_moves[3];
     int rev_m = 0;
-    rev_moves[0] = static_encode_san(game, "Kxf1", &rev_m);
+    rev_moves[0] = static_encode_san(game, "Re7", &rev_m);
     make_move(game, rev_moves[0]);
-    rev_moves[1] = static_encode_san(game, "Qh1#", &rev_m);
+    rev_moves[1] = static_encode_san(game, "Rd1+", &rev_m);
     make_move(game, rev_moves[1]);
+    rev_moves[2] = static_encode_san(game, "Re1", &rev_m);
+    make_move(game, rev_moves[2]);
     game_review rev;
-    if (!review_analyze_game(eng, game, rev_moves, 2, 5, 150, NULL, NULL, &rev)
-        || rev.plies[0].cls != REV_BLUNDER || rev.white.est_elo < 400 || rev.white.est_elo > 2850) {
-        printf("[FAIL] Post-Game Review did not flag Kxf1 (walking into -M1) as Blunder or bad "
+    if (!review_analyze_game(eng, game, rev_moves, 3, 5, 150, NULL, NULL, &rev)
+        || rev.plies[0].cls != REV_BLUNDER || rev.white.est_elo < 400 || rev.white.est_elo > 2800) {
+        printf("[FAIL] Post-Game Review did not flag Re7?? (walking into -M2) as Blunder or bad "
                "est_elo (%s, elo=%d)\n",
             review_class_name(rev.plies[0].cls), rev.white.est_elo);
         ok = false;
     }
     review_free(&rev);
+
+    // 10b. Verify Lichess Win% curve + Brilliant (!!) sacrifice detection (equal-mat Queen sac Qd8+!)
+    {
+        set_from_fen(game, "2r3k1/5ppp/8/1q6/8/8/3Q1PPP/3R2K1 w - - 0 20");
+        u64 br_moves[3];
+        int bm = 0;
+        br_moves[0] = static_encode_san(game, "Qd8+", &bm);
+        make_move(game, br_moves[0]);
+        br_moves[1] = static_encode_san(game, "Rxd8", &bm);
+        make_move(game, br_moves[1]);
+        br_moves[2] = static_encode_san(game, "Rxd8#", &bm);
+        make_move(game, br_moves[2]);
+        game_review br_rev;
+        if (!review_analyze_game(eng, game, br_moves, 3, 5, 150, NULL, NULL, &br_rev)
+            || br_rev.plies[0].cls != REV_BRILLIANT || br_rev.white.counts[REV_BRILLIANT] != 1) {
+            printf("[FAIL] Post-Game Review did not detect Qd8+! Queen sacrifice as Brilliant "
+                   "(got %s)\n",
+                review_class_name(br_rev.plies[0].cls));
+            ok = false;
+        }
+        review_free(&br_rev);
+    }
 
     // 11. Curated Puzzles: verify EVERY puzzle's FEN & solution move sequence is 100% legal
     //     and every "mate" puzzle ends in checkmate!
@@ -1227,6 +1251,35 @@ static bool test_engine_upgrades(full_chess *game) {
         if (strcmp(best_u, "a1a8") != 0 || out_wdl[0] < 0.90f) {
             printf("[FAIL] Zero-C C MCTS failed mate-in-1 Ra8# (got %s, W=%.2f)\n", best_u,
                 out_wdl[0]);
+            ok = false;
+        }
+
+        // Mate-in-2 Exact Solver check: 2r3k1/5ppp/8/8/8/8/3Q1PPP/3R2K1 w - - 0 1 -> Qd8+! Rxd8 Rxd8#
+        az_arena_reset_game(aza, 0, "2r3k1/5ppp/8/8/8/8/3Q1PPP/3R2K1 w - - 0 1");
+        for (int step = 0; step < 8; step++) {
+            int b = az_arena_collect_leaves(aza, 1, pl_buf, lc_buf, la_buf);
+            if (b <= 0) {
+                break;
+            }
+            for (int c = 0; c < lc_buf[0]; c++) {
+                pr_buf[c] = 1.0f / (float) lc_buf[0];
+            }
+            az_arena_apply_evals(aza, 1, pr_buf, wdl_buf, ml_buf);
+        }
+        az_arena_best_move(aza, 0, 0.0f, best_u, out_wdl, &out_ml);
+        if (strcmp(best_u, "d2d8") != 0 || out_wdl[0] < 0.95f) {
+            printf("[FAIL] Zero-C Exact MCTS Solver failed mate-in-2 Qd8+! (got %s, W=%.2f)\n",
+                best_u, out_wdl[0]);
+            ok = false;
+        }
+
+        // 20-plane encoding check: plane 18 = repetition flag, plane 19 = White STM color
+        float ctx_p[AZ_BOARD_FLOATS];
+        set_from_fen(game, "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1");
+        az_encode_board_ctx(game->game, 0, 1, ctx_p);
+        if (ctx_p[18 * 64] < 0.9f || ctx_p[19 * 64] > 0.1f) {
+            printf("[FAIL] Zero-C 20-plane encoding failed (rep=%.1f, stm=%.1f)\n",
+                ctx_p[18 * 64], ctx_p[19 * 64]);
             ok = false;
         }
         az_arena_destroy(aza);

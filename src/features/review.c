@@ -4,70 +4,37 @@
 #include "core/game.h"
 #include "core/movegen.h"
 #include "core/notation.h"
+#include "engine/see.h"
 
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
-static review_move_class classify_move(
-    int raw_cpl, double win_drop, bool is_best, int eval_before_mover, int eval_after_mover) {
-    if (is_best) {
-        return REV_BEST;
+// Official Lichess winning-chances sigmoid (maps centipawns -> 0.0 .. 100.0%).
+double review_lichess_win_pct(int cp) {
+    if (cp > MATE_BOUND) {
+        return 100.0;
     }
-
-    // Special handling for forced-mate transitions so walking into mate or missing mate
-    // is NEVER masked by win-probability saturation or centipawn clamping!
-    bool was_mated = (eval_before_mover < -MATE_BOUND);
-    bool now_mated = (eval_after_mover < -MATE_BOUND);
-    bool had_mate = (eval_before_mover > MATE_BOUND);
-    bool keeps_mate = (eval_after_mover > MATE_BOUND);
-
-    if (!was_mated && now_mated) {
-        // Walked into a forced checkmate when a non-mate defense existed
-        int mate_plies = MATE_SCORE + eval_after_mover;
-        return (mate_plies <= 4 || eval_before_mover > -800) ? REV_BLUNDER : REV_MISTAKE;
+    if (cp < -MATE_BOUND) {
+        return 0.0;
     }
-    if (had_mate && !keeps_mate) {
-        // Missed a forced checkmate
-        return (eval_after_mover < 400) ? REV_BLUNDER : REV_MISTAKE;
+    double cl = (double) cp;
+    if (cl > 4000.0) {
+        cl = 4000.0;
+    } else if (cl < -4000.0) {
+        cl = -4000.0;
     }
-
-    // Normal centipawn / win-probability classification using UNCLAMPED raw_cpl
-    if (raw_cpl <= 10 && win_drop < 0.02) {
-        return REV_BEST;
-    }
-    if (raw_cpl <= 45 && win_drop < 0.05) {
-        return REV_GOOD;
-    }
-    if (raw_cpl <= 100 && win_drop < 0.10) {
-        return REV_INACCURACY;
-    }
-    if (raw_cpl <= 240 && win_drop < 0.22) {
-        return REV_MISTAKE;
-    }
-    return REV_BLUNDER;
+    return 50.0 + 50.0 * (2.0 / (1.0 + exp(-0.00368208 * cl)) - 1.0);
 }
 
-static double accuracy_pct(double win_drop, int raw_cpl, bool blundered_mate) {
+static double lichess_move_accuracy(double win_drop_pct, bool blundered_mate) {
     if (blundered_mate) {
         return 0.0;
     }
-    // Blend win-probability drop with a mild raw-CPL penalty so hanging pieces in lost
-    // positions still lowers accuracy instead of showing 100%
-    double effective_drop = win_drop;
-    if (raw_cpl > 100 && effective_drop < 0.05) {
-        double cpl_drop = (double) raw_cpl / 1200.0;
-        if (cpl_drop > 0.35) {
-            cpl_drop = 0.35;
-        }
-        if (cpl_drop > effective_drop) {
-            effective_drop = cpl_drop;
-        }
-    }
-    if (effective_drop <= 0.0) {
+    if (win_drop_pct <= 0.0) {
         return 100.0;
     }
-    double pct = 103.1668 * exp(-4.354 * effective_drop) - 3.1669;
+    double pct = 103.1668 * exp(-0.04354 * win_drop_pct) - 3.1669;
     if (pct > 100.0) {
         pct = 100.0;
     }
@@ -77,8 +44,109 @@ static double accuracy_pct(double win_drop, int raw_cpl, bool blundered_mate) {
     return pct;
 }
 
+static int quick_material_cp(const chess *b) {
+    u64 f = b->friendly_pieces;
+    u64 e = b->enemy_pieces;
+    u64 tp = b->pawns & PAWN_MASK;
+    u64 orth = b->orthogonal_pieces;
+    u64 diag = b->diagonal_pieces;
+    u64 kings = b->kings;
+    int fm = __builtin_popcountll(f & tp) * 100
+             + __builtin_popcountll(f & ~(tp | orth | diag | kings)) * 320
+             + __builtin_popcountll(f & diag & ~orth) * 330
+             + __builtin_popcountll(f & orth & ~diag) * 500
+             + __builtin_popcountll(f & diag & orth) * 900;
+    int em = __builtin_popcountll(e & tp) * 100
+             + __builtin_popcountll(e & ~(tp | orth | diag | kings)) * 320
+             + __builtin_popcountll(e & diag & ~orth) * 330
+             + __builtin_popcountll(e & orth & ~diag) * 500
+             + __builtin_popcountll(e & diag & orth) * 900;
+    return fm - em;
+}
+
+static bool is_brilliant_sacrifice(const chess *before_board, u64 played, int num_legal,
+    int move_num, bool is_best, double win_drop_pct, int eval_before_mover, int eval_after_mover) {
+    (void) eval_before_mover;
+    if (!is_best && win_drop_pct > 1.2) {
+        return false;
+    }
+    // Must be a real choice (not forced) and past the first 4 opening moves
+    if (num_legal < 3 || move_num < 5) {
+        return false;
+    }
+    // Don't award Brilliant in trivial +500cp material mop-ups or lost positions
+    if (quick_material_cp(before_board) >= 500 || eval_after_mover < -40) {
+        return false;
+    }
+    u8 sp = get_start_piece(played);
+    u8 pr = get_promotion_piece(played);
+    // Require sacrificing a real piece (N/B/R/Q or promotion sacrifice), not a random pawn push
+    if (sp == FRIENDLY_PAWN && pr == sp) {
+        return false;
+    }
+    // Static Exchange Evaluation detects genuine tactical piece sacrifices (e.g. Qxd8+, Bxh7+, Nxf7!)
+    int see_val = engine_see(before_board, played);
+    if (see_val <= -200) {
+        return true;
+    }
+    return false;
+}
+
+// Authentic Lichess win%-based move classification + Chess.com-style Brilliant (!!).
+static review_move_class classify_move(const chess *before_board, u64 played, int num_legal,
+    int move_num, double win_drop_pct, bool is_best, int eval_before_mover, int eval_after_mover) {
+    if (is_brilliant_sacrifice(before_board, played, num_legal, move_num, is_best, win_drop_pct,
+            eval_before_mover, eval_after_mover)) {
+        return REV_BRILLIANT;
+    }
+    if (is_best) {
+        return REV_BEST;
+    }
+
+    // Explicit forced-mate transitions so mate blunders are never masked
+    bool was_mated = (eval_before_mover < -MATE_BOUND);
+    bool now_mated = (eval_after_mover < -MATE_BOUND);
+    bool had_mate = (eval_before_mover > MATE_BOUND);
+    bool keeps_mate = (eval_after_mover > MATE_BOUND);
+
+    if (!was_mated && now_mated) {
+        int mate_plies = MATE_SCORE + eval_after_mover;
+        return (mate_plies <= 4 || eval_before_mover > -550) ? REV_BLUNDER : REV_MISTAKE;
+    }
+    if (had_mate && !keeps_mate) {
+        if (eval_after_mover < 250) {
+            return REV_BLUNDER;
+        }
+        if (eval_after_mover < 600) {
+            return REV_MISTAKE;
+        }
+        return REV_INACCURACY;
+    }
+
+    // Pure Lichess Win% drop thresholds (on 0..100% scale, matching lila Advice.scala):
+    //   < 2%  -> Best
+    //   < 5%  -> Good
+    //   < 10% -> Inaccuracy (?!)   [delta winningChances >= 0.10]
+    //   < 20% -> Mistake (?)       [delta winningChances >= 0.20]
+    //  >= 20% -> Blunder (??)      [delta winningChances >= 0.40]
+    if (win_drop_pct < 2.0) {
+        return REV_BEST;
+    }
+    if (win_drop_pct < 5.0) {
+        return REV_GOOD;
+    }
+    if (win_drop_pct < 10.0) {
+        return REV_INACCURACY;
+    }
+    if (win_drop_pct < 20.0) {
+        return REV_MISTAKE;
+    }
+    return REV_BLUNDER;
+}
+
 const char *review_class_name(review_move_class cls) {
     switch (cls) {
+    case REV_BRILLIANT: return "brilliant";
     case REV_BEST: return "best";
     case REV_GOOD: return "good";
     case REV_INACCURACY: return "inaccuracy";
@@ -109,43 +177,130 @@ const char *review_elo_tier(int elo) {
     return "Novice";
 }
 
-static int estimate_game_elo(const review_side_stats *s) {
+// Empirically calibrated Lichess/FIDE Accuracy % -> Performance Elo curve.
+static double accuracy_to_elo_curve(double acc) {
+    static const double xs[]
+        = { 0.0, 35.0, 50.0, 60.0, 68.0, 74.0, 80.0, 85.0, 90.0, 93.5, 96.5, 98.5, 100.0 };
+    static const double ys[]
+        = { 400.0, 500.0, 650.0, 900.0, 1100.0, 1300.0, 1550.0, 1800.0, 2050.0, 2250.0, 2450.0,
+            2650.0, 2800.0 };
+    const int n = (int) (sizeof(xs) / sizeof(xs[0]));
+    if (acc <= xs[0]) {
+        return ys[0];
+    }
+    if (acc >= xs[n - 1]) {
+        return ys[n - 1];
+    }
+    for (int i = 0; i < n - 1; i++) {
+        if (acc <= xs[i + 1]) {
+            double t = (acc - xs[i]) / (xs[i + 1] - xs[i]);
+            return ys[i] + t * (ys[i + 1] - ys[i]);
+        }
+    }
+    return ys[n - 1];
+}
+
+// Calibrated Performance Elo: blends Lichess accuracy curve + capped ACPL without double-penalizing!
+static int estimate_game_elo(const review_side_stats *s, int game_result_for_side) {
     if (!s || s->move_count <= 0) {
         return 0;
     }
     double acc = s->accuracy;
     if (acc < 0.0) {
         acc = 0.0;
-    }
-    if (acc > 100.0) {
+    } else if (acc > 100.0) {
         acc = 100.0;
     }
-    double acpl = (double) (s->acpl < 0 ? 0 : s->acpl);
+    double acpl = (double) (s->acpl < 0 ? 0 : (s->acpl > 250 ? 250 : s->acpl));
 
-    // Smooth performance model combining accuracy % and ACPL
-    double elo_acc = 400.0 + 2300.0 * pow(acc / 100.0, 1.85);
-    double elo_acpl = 2750.0 * exp(-0.0085 * acpl);
-    double raw = 0.55 * elo_acc + 0.45 * elo_acpl;
+    double elo_acc = accuracy_to_elo_curve(acc);
+    double elo_acpl = 2650.0 * exp(-0.0085 * acpl);
+    double raw = 0.78 * elo_acc + 0.22 * elo_acpl;
 
-    // Penalize high blunder/mistake density
-    double blunder_rate = (double) s->counts[REV_BLUNDER] / (double) s->move_count;
-    double mistake_rate = (double) s->counts[REV_MISTAKE] / (double) s->move_count;
-    raw -= blunder_rate * 480.0 + mistake_rate * 160.0;
-
-    // Shrink very short games (< 10 moves) smoothly toward 1350 to avoid extreme noise
-    if (s->move_count < 10) {
-        double w = (double) s->move_count / 10.0;
-        raw = w * raw + (1.0 - w) * 1350.0;
+    // Gentle outcome nudge on real games (>= 12 moves)
+    if (s->move_count >= 12) {
+        if (game_result_for_side > 0) {
+            raw += 40.0;
+        } else if (game_result_for_side < 0) {
+            raw -= 40.0;
+        }
     }
 
-    int rounded = ((int) lround(raw / 50.0)) * 50;
+    // Smooth Bayesian shrinkage toward 1250 on short games (< 14 moves) to prevent wild 2700 spikes
+    if (s->move_count < 14) {
+        double w = (double) s->move_count / 14.0;
+        raw = w * raw + (1.0 - w) * 1250.0;
+    }
+
+    int rounded = ((int) lround(raw / 25.0)) * 25;
     if (rounded < 400) {
         rounded = 400;
     }
-    if (rounded > 2850) {
-        rounded = 2850;
+    if (rounded > 2800) {
+        rounded = 2800;
     }
     return rounded;
+}
+
+// Lichess combined accuracy: 50% volatility-weighted arithmetic mean + 50% harmonic mean.
+static double compute_lichess_side_accuracy(
+    const review_ply *plies, const double *win_pcts_w, int total_plies, bool for_black) {
+    double w_sum = 0.0;
+    double w_acc_sum = 0.0;
+    double h_inv_sum = 0.0;
+    int n = 0;
+
+    for (int p = 0; p < total_plies; p++) {
+        if (plies[p].was_black != for_black) {
+            continue;
+        }
+        // Compute local win% volatility (stddev over a 5-ply window centered at p)
+        int lo = p - 2;
+        int hi = p + 2;
+        if (lo < 0) {
+            lo = 0;
+        }
+        if (hi > total_plies) {
+            hi = total_plies;
+        }
+        int wn = hi - lo + 1;
+        double mean = 0.0;
+        for (int k = lo; k <= hi; k++) {
+            mean += win_pcts_w[k];
+        }
+        mean /= (double) wn;
+        double var = 0.0;
+        for (int k = lo; k <= hi; k++) {
+            double diff = win_pcts_w[k] - mean;
+            var += diff * diff;
+        }
+        double sd = sqrt(var / (double) wn);
+        double weight = sd;
+        if (weight < 0.5) {
+            weight = 0.5;
+        } else if (weight > 12.0) {
+            weight = 12.0;
+        }
+
+        double ma = plies[p].move_acc;
+        w_sum += weight;
+        w_acc_sum += weight * ma;
+        h_inv_sum += 1.0 / (ma < 2.0 ? 2.0 : ma);
+        n++;
+    }
+    if (n <= 0) {
+        return 0.0;
+    }
+    double weighted_mean = (w_sum > 1e-9) ? (w_acc_sum / w_sum) : 0.0;
+    double harmonic_mean = (double) n / h_inv_sum;
+    double combined = 0.5 * weighted_mean + 0.5 * harmonic_mean;
+    if (combined > 100.0) {
+        combined = 100.0;
+    }
+    if (combined < 0.0) {
+        combined = 0.0;
+    }
+    return combined;
 }
 
 bool review_analyze_game_ex(engine *eng, const full_chess *game, const u64 *moves, int move_count,
@@ -165,10 +320,12 @@ bool review_analyze_game_ex(engine *eng, const full_chess *game, const u64 *move
 
     review_ply *plies = (review_ply *) calloc((size_t) total_plies, sizeof(review_ply));
     int *evals_w = (int *) calloc((size_t) (total_plies + 1), sizeof(int));
+    double *win_pcts_w = (double *) calloc((size_t) (total_plies + 1), sizeof(double));
     full_chess *replay = full_chess_create();
-    if (!plies || !evals_w || !replay) {
+    if (!plies || !evals_w || !win_pcts_w || !replay) {
         free(plies);
         free(evals_w);
+        free(win_pcts_w);
         full_chess_delete(&replay);
         return false;
     }
@@ -192,8 +349,8 @@ bool review_analyze_game_ex(engine *eng, const full_chess *game, const u64 *move
     search_result prev_sr
         = eval_fn ? eval_fn(replay, eval_ctx) : engine_search(eng, replay, depth, time_ms);
     evals_w[0] = engine_score_to_white(replay->game, prev_sr.score_cp);
+    win_pcts_w[0] = review_lichess_win_pct(evals_w[0]);
 
-    double w_acc_sum = 0.0, b_acc_sum = 0.0;
     long w_cpl_sum = 0, b_cpl_sum = 0;
 
     for (int p = 0; p < total_plies; p++) {
@@ -202,9 +359,12 @@ bool review_analyze_game_ex(engine *eng, const full_chess *game, const u64 *move
         }
 
         u64 played = mv_list[p];
+        chess before_board = *(replay->game);
+        int n_legal = num_legal_moves(replay);
         bool was_black = is_flipped(replay->game);
         int abs_ply = p + (game->start_black_to_move ? 1 : 0);
-        plies[p].move_num = game->start_full_move + (abs_ply / 2);
+        int mv_num = game->start_full_move + (abs_ply / 2);
+        plies[p].move_num = mv_num;
         plies[p].was_black = was_black;
         plies[p].eval_before_w = evals_w[p];
 
@@ -226,64 +386,50 @@ bool review_analyze_game_ex(engine *eng, const full_chess *game, const u64 *move
             after_w = engine_score_to_white(replay->game, next_sr.score_cp);
         }
         evals_w[p + 1] = after_w;
+        win_pcts_w[p + 1] = review_lichess_win_pct(after_w);
         plies[p].eval_after_w = after_w;
 
-        double wp_b = engine_win_prob(evals_w[p]);
-        double wp_a = engine_win_prob(after_w);
-        double mover_b = was_black ? (1.0 - wp_b) : wp_b;
-        double mover_a = was_black ? (1.0 - wp_a) : wp_a;
-        double win_drop = mover_b - mover_a;
-        if (win_drop < 0.0) {
-            win_drop = 0.0;
+        double mover_wp_b = was_black ? (100.0 - win_pcts_w[p]) : win_pcts_w[p];
+        double mover_wp_a = was_black ? (100.0 - win_pcts_w[p + 1]) : win_pcts_w[p + 1];
+        double win_drop_pct = mover_wp_b - mover_wp_a;
+        if (win_drop_pct < 0.0) {
+            win_drop_pct = 0.0;
         }
 
         int eval_before_mover = was_black ? -evals_w[p] : evals_w[p];
         int eval_after_mover = was_black ? -after_w : after_w;
 
-        // Unclamped centipawn loss for accurate move classification (even in -16 positions!)
-        int raw_b = (eval_before_mover > MATE_BOUND)
-                        ? 3000
-                        : ((eval_before_mover < -MATE_BOUND) ? -3000 : eval_before_mover);
-        int raw_a = (eval_after_mover > MATE_BOUND)
-                        ? 3000
-                        : ((eval_after_mover < -MATE_BOUND) ? -3000 : eval_after_mover);
-        int raw_cpl = raw_b - raw_a;
-        if (raw_cpl < 0) {
-            raw_cpl = 0;
-        }
-
-        // Clamped CPL for summary ACPL so mate swings don't explode the average
-        int cb = (evals_w[p] > 1500) ? 1500 : ((evals_w[p] < -1500) ? -1500 : evals_w[p]);
-        int ca = (after_w > 1500) ? 1500 : ((after_w < -1500) ? -1500 : after_w);
+        // Capped CPL (Lichess caps evals at +/-1000 cp when computing ACPL!)
+        int cb = (evals_w[p] > 1000) ? 1000 : ((evals_w[p] < -1000) ? -1000 : evals_w[p]);
+        int ca = (after_w > 1000) ? 1000 : ((after_w < -1000) ? -1000 : after_w);
         int acpl_delta = was_black ? (ca - cb) : (cb - ca);
         if (acpl_delta < 0) {
             acpl_delta = 0;
         }
 
         bool is_best = (played == prev_sr.best_move);
-        review_move_class cls
-            = classify_move(raw_cpl, win_drop, is_best, eval_before_mover, eval_after_mover);
+        review_move_class cls = classify_move(&before_board, played, n_legal, mv_num, win_drop_pct,
+            is_best, eval_before_mover, eval_after_mover);
         bool blundered_mate
             = (!is_best && eval_before_mover >= -MATE_BOUND && eval_after_mover < -MATE_BOUND);
+        double m_acc = lichess_move_accuracy(win_drop_pct, blundered_mate);
 
-        plies[p].cpl = raw_cpl;
-        plies[p].win_drop = win_drop;
+        plies[p].cpl = acpl_delta;
+        plies[p].win_drop = win_drop_pct / 100.0;
+        plies[p].move_acc = m_acc;
         plies[p].cls = cls;
 
-        if (win_drop > out->turning_point_drop) {
-            out->turning_point_drop = win_drop;
+        if (plies[p].win_drop > out->turning_point_drop) {
+            out->turning_point_drop = plies[p].win_drop;
             out->turning_point_ply = p;
         }
 
-        double acc = accuracy_pct(win_drop, raw_cpl, blundered_mate);
         if (!was_black) {
             out->white.counts[cls]++;
-            w_acc_sum += acc;
             w_cpl_sum += acpl_delta;
             out->white.move_count++;
         } else {
             out->black.counts[cls]++;
-            b_acc_sum += acc;
             b_cpl_sum += acpl_delta;
             out->black.move_count++;
         }
@@ -291,17 +437,25 @@ bool review_analyze_game_ex(engine *eng, const full_chess *game, const u64 *move
         prev_sr = next_sr;
     }
 
+    int final_white_res = 0;
+    if (replay->is_game_over && !replay->is_draw) {
+        final_white_res = is_flipped(replay->game) ? 1 : -1;
+    } else if (evals_w[total_plies] >= 400) {
+        final_white_res = 1;
+    } else if (evals_w[total_plies] <= -400) {
+        final_white_res = -1;
+    }
+
     out->total_plies = total_plies;
     out->plies = plies;
     out->evals_w = evals_w;
-    out->white.accuracy
-        = (out->white.move_count > 0) ? (w_acc_sum / (double) out->white.move_count) : 0.0;
-    out->black.accuracy
-        = (out->black.move_count > 0) ? (b_acc_sum / (double) out->black.move_count) : 0.0;
+    out->win_pcts_w = win_pcts_w;
+    out->white.accuracy = compute_lichess_side_accuracy(plies, win_pcts_w, total_plies, false);
+    out->black.accuracy = compute_lichess_side_accuracy(plies, win_pcts_w, total_plies, true);
     out->white.acpl = (out->white.move_count > 0) ? (int) (w_cpl_sum / out->white.move_count) : 0;
     out->black.acpl = (out->black.move_count > 0) ? (int) (b_cpl_sum / out->black.move_count) : 0;
-    out->white.est_elo = estimate_game_elo(&out->white);
-    out->black.est_elo = estimate_game_elo(&out->black);
+    out->white.est_elo = estimate_game_elo(&out->white, final_white_res);
+    out->black.est_elo = estimate_game_elo(&out->black, -final_white_res);
 
     full_chess_delete(&replay);
     return true;
@@ -319,6 +473,7 @@ void review_free(game_review *rev) {
     }
     free(rev->plies);
     free(rev->evals_w);
+    free(rev->win_pcts_w);
     memset(rev, 0, sizeof(*rev));
     rev->turning_point_ply = -1;
 }

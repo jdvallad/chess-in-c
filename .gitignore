@@ -16,7 +16,14 @@ build/
 .DS_Store
 *.swp
 
-# Zero-C Python venv & training outputs
+# Zero-C Python venv & training outputs (huge checkpoints, replay buffers, logs)
 .venv-az/
 src/az/__pycache__/
+**/__pycache__/
+*.pyc
 data/az/
+data/az_*/
+*.pt
+*.pth
+*.npz
+*.log

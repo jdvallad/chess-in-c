@@ -236,6 +236,8 @@
       { el: $("home-opponent"), def: "4" },
       { el: $("home-watch-w"), def: "6" },
       { el: $("home-watch-b"), def: "9" },
+      { el: $("bfh-white-bot"), def: "12" },
+      { el: $("bfh-black-bot"), def: "9" },
     ];
     for (const t of targets) {
       if (!t.el) continue;
@@ -243,7 +245,7 @@
       t.el.innerHTML = "";
       for (const p of presets) {
         let eloTag = "";
-        if (p.engine === "c" && p.has_elo) {
+        if ((p.engine === "c" || p.engine === "az") && p.has_elo) {
           eloTag = p.is_relative ? ` (${p.est_elo >= 0 ? "+" : ""}${p.est_elo} rel)` : ` (~${p.est_elo} Elo)`;
         }
         const prefix = p.engine === "c" ? "Titan-C " : "";
@@ -267,14 +269,14 @@
 
     const eloMini = $("home-elo-mini");
     if (eloMini && presets) {
-      const cPresets = presets.filter((p) => p.engine === "c");
-      if (cPresets.some((p) => p.has_elo)) {
-        eloMini.innerHTML = cPresets
+      const rated = presets.filter((p) => p.engine === "c" || (p.engine === "az" && p.available));
+      if (rated.some((p) => p.has_elo)) {
+        eloMini.innerHTML = rated
           .map(
             (p) =>
-              `<div class="elo-mini-pill"><span>L${p.level} ${p.name}</span><strong>${
-                p.has_elo ? `~${p.est_elo}` : "—"
-              }</strong></div>`
+              `<div class="elo-mini-pill"><span>${
+                p.level === 13 ? "Zero-C v1 🏆" : p.engine === "az" ? "Zero-C v2" : `L${p.level} ${p.name}`
+              }</span><strong>${p.has_elo ? `~${p.est_elo}` : "—"}</strong></div>`
           )
           .join("");
       }
@@ -462,6 +464,13 @@
       bestAnalysisArrow
     ) {
       shapes += buildArrowMarkup(bestAnalysisArrow.from, bestAnalysisArrow.to, "best", "ah-best");
+    }
+    if (spectateActive && spectateArrows.length > 0) {
+      const spCols = ["best", "blue", "orange"];
+      spectateArrows.forEach((arr, idx) => {
+        const ck = spCols[idx % spCols.length];
+        shapes += buildArrowMarkup(arr.from, arr.to, ck, `ah-${ck}`);
+      });
     }
     if (hintArrow) {
       shapes += buildArrowMarkup(hintArrow.from, hintArrow.to, "blue", "ah-blue");
@@ -986,6 +995,7 @@
   // ==========================================================================
   async function enterAnalysisMode() {
     clearWatchTimer();
+    syncUrl("/analysis");
     if (state && state.mode !== "analysis") {
       preAnalysisMode = state.mode;
     }
@@ -1022,6 +1032,7 @@
   }
 
   async function startNewGame(customMode = null, customWL = null, customBL = null, customFen = "", customElo = 0, azCheckpoint = "") {
+    stopSpectateTraining(false);
     clearWatchTimer();
     watchPaused = false;
     $("btn-watch-toggle").textContent = "\u23F8 Pause";
@@ -1140,30 +1151,103 @@
   }
 
   // ==========================================================================
-  // Post-Game Review Modal + Clickable Move Jumping into Analysis!
+  // Post-Game Review Modal (Lichess Win%-Based Accuracy, Brilliant !!, Interactive Graph)
   // ==========================================================================
-  function buildEvalChartSvg(timeline) {
-    if (!timeline || timeline.length < 2) return "";
-    const w = 700;
-    const h = 110;
-    const pts = timeline.map((wp, i) => {
-      const x = (i / (timeline.length - 1)) * w;
-      const y = (1 - wp) * (h - 10) + 5;
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
+  function renderLichessEvalGraph(containerEl, timeline, moves, onJumpPly) {
+    if (!timeline || timeline.length < 2) {
+      containerEl.innerHTML = "";
+      return;
+    }
+    const W = 720, H = 126, padL = 6, padR = 6, padT = 8, padB = 18;
+    const pw = W - padL - padR, ph = H - padT - padB;
+    const n = timeline.length;
+    const sx = (i) => padL + (i / (n - 1)) * pw;
+    const sy = (wp) => padT + (1 - Math.max(0.01, Math.min(0.99, wp))) * ph;
+    const midY = padT + ph / 2;
+
+    const pts = timeline.map((wp, i) => `${sx(i).toFixed(1)},${sy(wp).toFixed(1)}`);
+    const polyPts = `${sx(0).toFixed(1)},${midY.toFixed(1)} ${pts.join(" ")} ${sx(n - 1).toFixed(1)},${midY.toFixed(1)}`;
+
+    // Colored annotation dots on key moves (Brilliant, Blunder, Mistake, Inaccuracy)
+    const dotColor = {
+      brilliant: "#22d3ee",
+      blunder: "#f85149",
+      mistake: "#f0883e",
+      inaccuracy: "#e3b341",
+    };
+    let dots = "";
+    for (const m of moves) {
+      const c = dotColor[m.rating];
+      if (!c) continue;
+      const idx = Math.min(n - 1, m.ply);
+      const r = m.rating === "brilliant" || m.rating === "blunder" ? 4.3 : 3.2;
+      dots += `<circle cx="${sx(idx).toFixed(1)}" cy="${sy(timeline[idx]).toFixed(1)}" r="${r}" fill="${c}" stroke="#0b0f15" stroke-width="1.2"/>`;
+    }
+
+    containerEl.innerHTML = `
+      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+        <defs>
+          <clipPath id="rev-clip-top"><rect x="${padL}" y="${padT}" width="${pw}" height="${ph / 2}"/></clipPath>
+          <clipPath id="rev-clip-bot"><rect x="${padL}" y="${midY}" width="${pw}" height="${ph / 2}"/></clipPath>
+        </defs>
+        <rect x="${padL}" y="${padT}" width="${pw}" height="${ph / 2}" fill="rgba(240,246,252,0.06)" />
+        <rect x="${padL}" y="${midY}" width="${pw}" height="${ph / 2}" fill="rgba(0,0,0,0.32)" />
+        <line x1="${padL}" y1="${sy(0.75).toFixed(1)}" x2="${W - padR}" y2="${sy(0.75).toFixed(1)}" stroke="rgba(139,148,158,0.14)" stroke-dasharray="2 3" />
+        <line x1="${padL}" y1="${midY.toFixed(1)}" x2="${W - padR}" y2="${midY.toFixed(1)}" stroke="rgba(255,255,255,0.28)" stroke-dasharray="4 4" />
+        <line x1="${padL}" y1="${sy(0.25).toFixed(1)}" x2="${W - padR}" y2="${sy(0.25).toFixed(1)}" stroke="rgba(139,148,158,0.14)" stroke-dasharray="2 3" />
+        <polygon points="${polyPts}" fill="rgba(240, 246, 252, 0.36)" clip-path="url(#rev-clip-top)" />
+        <polygon points="${polyPts}" fill="rgba(88, 166, 255, 0.24)" clip-path="url(#rev-clip-bot)" />
+        <polyline points="${pts.join(" ")}" fill="none" stroke="#c9d1d9" stroke-width="2" stroke-linejoin="round" />
+        ${dots}
+        <line class="rev-hover-line" x1="0" y1="${padT}" x2="0" y2="${padT + ph}" stroke="rgba(255,255,255,0.45)" stroke-dasharray="2 2" style="display:none"/>
+        <text x="${padL + 4}" y="${H - 4}" fill="#8b949e" font-size="9">Start</text>
+        <text x="${W / 2}" y="${H - 4}" fill="#8b949e" font-size="9" text-anchor="middle">Click anywhere on the advantage graph to jump to that move</text>
+        <text x="${W - padR - 4}" y="${H - 4}" fill="#8b949e" font-size="9" text-anchor="end">Ply ${n - 1}</text>
+      </svg>
+      <div class="az-tooltip hidden"></div>`;
+
+    const svg = containerEl.querySelector("svg");
+    const hline = containerEl.querySelector(".rev-hover-line");
+    const tip = containerEl.querySelector(".az-tooltip");
+    const pickPly = (ev) => {
+      const rect = svg.getBoundingClientRect();
+      const relX = ((ev.clientX - rect.left) / Math.max(1, rect.width)) * W;
+      const frac = Math.max(0, Math.min(1, (relX - padL) / Math.max(1, pw)));
+      return Math.round(frac * (n - 1));
+    };
+    svg.addEventListener("mousemove", (ev) => {
+      const idx = pickPly(ev);
+      const xPos = sx(idx);
+      hline.setAttribute("x1", xPos.toFixed(1));
+      hline.setAttribute("x2", xPos.toFixed(1));
+      hline.style.display = "block";
+      const m = idx > 0 ? moves[idx - 1] : null;
+      if (m) {
+        const dot = m.side === "b" ? "..." : ".";
+        tip.innerHTML = `<strong>${m.move_num}${dot} ${m.played}</strong> ${badgeHtml(m.rating)} &bull; <code>${m.eval_str.trim()}</code>`;
+      } else {
+        tip.innerHTML = `<strong>Start Position</strong>`;
+      }
+      tip.classList.remove("hidden");
+      const rect = svg.getBoundingClientRect();
+      const px = (xPos / W) * rect.width;
+      const onRight = px > rect.width * 0.6;
+      tip.style.left = onRight ? `${Math.max(4, px - tip.offsetWidth - 10)}px` : `${Math.min(rect.width - tip.offsetWidth - 4, px + 10)}px`;
+      tip.style.top = "8px";
     });
-    const areaWhite = `0,${h / 2} ${pts.join(" ")} ${w},${h / 2}`;
-    return `
-      <svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
-        <rect x="0" y="0" width="${w}" height="${h / 2}" fill="rgba(255,255,255,0.03)" />
-        <rect x="0" y="${h / 2}" width="${w}" height="${h / 2}" fill="rgba(0,0,0,0.22)" />
-        <line x1="0" y1="${h / 2}" x2="${w}" y2="${h / 2}" stroke="#303846" stroke-dasharray="4 4" />
-        <polygon points="${areaWhite}" fill="rgba(88, 166, 255, 0.22)" />
-        <polyline points="${pts.join(" ")}" fill="none" stroke="#58a6ff" stroke-width="2.5" />
-      </svg>`;
+    svg.addEventListener("mouseleave", () => {
+      hline.style.display = "none";
+      tip.classList.add("hidden");
+    });
+    svg.addEventListener("click", (ev) => {
+      const idx = pickPly(ev);
+      if (idx > 0 && onJumpPly) onJumpPly(idx);
+    });
   }
 
   function badgeHtml(rating) {
     const map = {
+      brilliant: ["!! Brilliant", "badge-brilliant"],
       best: ["&#9733; Best", "badge-best"],
       good: ["&#10003; Good", "badge-good"],
       inaccuracy: ["?! Inaccuracy", "badge-inaccuracy"],
@@ -1180,9 +1264,10 @@
       return;
     }
     $("review-modal").classList.remove("hidden");
-    const revEngName = state.stockfish_available ? "Stockfish" : "Titan-C";
-    $("review-sub").textContent = `Analyzing ${state.total_plies} plies with ${revEngName}...`;
-    $("review-body").innerHTML = `<div class="empty-hint">Computing accuracy, turning points, and best alternatives...</div>`;
+    syncUrl("/review");
+    const revEngName = state.stockfish_available ? "Stockfish (depth 15)" : "Titan-C";
+    $("review-sub").textContent = `Analyzing ${state.total_plies} plies with ${revEngName} (Lichess Win% Accuracy + Brilliant Detection)...`;
+    $("review-body").innerHTML = `<div class="empty-hint">Computing Lichess accuracy, brilliant sacrifices, turning points, and calibrated Elo...</div>`;
 
     const rev = await api("/api/review", "POST");
     if (!rev.ok) {
@@ -1191,7 +1276,7 @@
     }
 
     const gradedBy = rev.engine === "stockfish" ? "Stockfish" : "Titan-C";
-    $("review-sub").textContent = `${state.white_name} vs ${state.black_name} (${state.total_plies} plies • Graded by ${gradedBy}) — click any move to inspect in Analysis`;
+    $("review-sub").textContent = `${state.white_name} vs ${state.black_name} (${state.total_plies} plies • Lichess Win% Model • ${gradedBy}) — click any move or graph point to inspect`;
 
     const renderAccCard = (title, s) => `
       <div class="acc-card">
@@ -1208,6 +1293,7 @@
         </div>
         <div class="acc-pills">
           <span class="term-dim">ACPL ${s.acpl}</span>
+          ${s.brilliant > 0 ? `<span class="badge-brilliant">!! ${s.brilliant}</span>` : ""}
           <span class="badge-best">&#9733; ${s.best}</span>
           <span class="badge-good">&#10003; ${s.good}</span>
           <span class="badge-inaccuracy">?! ${s.inaccuracy}</span>
@@ -1229,47 +1315,85 @@
         </div>`;
     }
 
-    const rowsHtml = rev.moves
-      .map((m) => {
-        const mv = `${m.move_num}${m.side === "b" ? "..." : "."}`;
-        const sugg =
-          (m.rating === "inaccuracy" || m.rating === "mistake" || m.rating === "blunder") &&
-          m.played !== m.best
-            ? `Best: <strong class="badge-best">${m.best}</strong> <span class="term-dim">(-${m.cpl} cp)</span>`
-            : "";
-        return `<tr data-jump-ply="${m.ply}">
-          <td>${mv}</td>
-          <td><strong>${m.played}</strong></td>
-          <td>${badgeHtml(m.rating)}</td>
-          <td>${m.eval_str.trim()}</td>
-          <td>${sugg}</td>
-        </tr>`;
-      })
-      .join("");
+    const totBril = (rev.white.brilliant || 0) + (rev.black.brilliant || 0);
+    const totBlund = (rev.white.blunder || 0) + (rev.black.blunder || 0);
+    const totMist = (rev.white.mistake || 0) + (rev.black.mistake || 0);
+    const totInacc = (rev.white.inaccuracy || 0) + (rev.black.inaccuracy || 0);
+
+    const buildRowsHtml = (filter) =>
+      rev.moves
+        .filter((m) => filter === "all" || m.rating === filter || (filter === "errors" && (m.rating === "blunder" || m.rating === "mistake" || m.rating === "inaccuracy")))
+        .map((m) => {
+          const mv = `${m.move_num}${m.side === "b" ? "..." : "."}`;
+          const wd = m.win_drop != null && m.win_drop >= 0.5 ? `-${m.win_drop.toFixed(1)}%` : "—";
+          let sugg = "";
+          if (m.rating === "brilliant") {
+            sugg = `<span class="badge-brilliant">Tactical sacrifice!</span>`;
+          } else if (
+            (m.rating === "inaccuracy" || m.rating === "mistake" || m.rating === "blunder") &&
+            m.played !== m.best
+          ) {
+            sugg = `Best: <strong class="badge-best">${m.best}</strong> <span class="term-dim">(-${m.cpl} cp)</span>`;
+          }
+          return `<tr data-jump-ply="${m.ply}">
+            <td>${mv}</td>
+            <td><strong>${m.played}</strong></td>
+            <td>${badgeHtml(m.rating)}</td>
+            <td>${m.eval_str.trim()}</td>
+            <td class="term-dim">${wd}</td>
+            <td>${sugg}</td>
+          </tr>`;
+        })
+        .join("");
 
     $("review-body").innerHTML = `
       <div class="review-summary">
         ${renderAccCard(state.white_name, rev.white)}
         ${renderAccCard(state.black_name, rev.black)}
       </div>
-      <div class="eval-chart-box">${buildEvalChartSvg(rev.timeline)}</div>
+      <div class="eval-chart-box" id="rev-eval-chart-box"></div>
       ${turningHtml}
+      <div class="rev-filter-bar" id="rev-filter-bar">
+        <button class="rev-filter-btn active" data-rf="all">All Moves (${rev.moves.length})</button>
+        <button class="rev-filter-btn" data-rf="errors">Key Mistakes (${totBlund + totMist + totInacc})</button>
+        ${totBril > 0 ? `<button class="rev-filter-btn" data-rf="brilliant"><span class="badge-brilliant">!! Brilliant (${totBril})</span></button>` : ""}
+        <button class="rev-filter-btn" data-rf="blunder"><span class="badge-blunder">?? Blunders (${totBlund})</span></button>
+        <button class="rev-filter-btn" data-rf="mistake"><span class="badge-mistake">? Mistakes (${totMist})</span></button>
+        <button class="rev-filter-btn" data-rf="inaccuracy"><span class="badge-inaccuracy">?! Inaccuracies (${totInacc})</span></button>
+      </div>
       <table class="review-table">
         <thead>
-          <tr><th>Move</th><th>Played</th><th>Rating</th><th>Eval</th><th>Engine Suggestion</th></tr>
+          <tr><th>Move</th><th>Played</th><th>Rating</th><th>Eval</th><th>Win% &Delta;</th><th>Engine Suggestion</th></tr>
         </thead>
-        <tbody>${rowsHtml}</tbody>
+        <tbody id="rev-moves-tbody">${buildRowsHtml("all")}</tbody>
       </table>`;
 
-    $("review-body")
-      .querySelectorAll("[data-jump-ply]")
-      .forEach((el) => {
-        el.addEventListener("click", async () => {
-          const ply = parseInt(el.dataset.jumpPly, 10);
-          $("review-modal").classList.add("hidden");
-          await jumpToPlyInAnalysis(ply);
+    const jumpHandler = async (ply) => {
+      $("review-modal").classList.add("hidden");
+      await jumpToPlyInAnalysis(ply);
+    };
+
+    renderLichessEvalGraph($("rev-eval-chart-box"), rev.timeline, rev.moves, jumpHandler);
+
+    const bindRowJumps = () => {
+      $("review-body")
+        .querySelectorAll("[data-jump-ply]")
+        .forEach((el) => {
+          el.addEventListener("click", async () => {
+            await jumpHandler(parseInt(el.dataset.jumpPly, 10));
+          });
         });
+    };
+    bindRowJumps();
+
+    $("rev-filter-bar").querySelectorAll(".rev-filter-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        $("rev-filter-bar").querySelectorAll(".rev-filter-btn").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        $("rev-moves-tbody").innerHTML = buildRowsHtml(btn.dataset.rf) || `<tr><td colspan="6" class="empty-hint">No moves in this category.</td></tr>`;
+        bindRowJumps();
       });
+    });
   }
 
   // ==========================================================================
@@ -1469,9 +1593,22 @@
   }
 
   // ==========================================================================
-  // Live Multithreaded Elo Gauntlet Modal
+  // Live Multithreaded Elo Arena & Precision Elo Calculator Modal
   // ==========================================================================
   let gauntletPollTimer = null;
+  let gtActiveTab = "gauntlet"; // "gauntlet" | "calc"
+
+  function setGauntletTab(tab, isRunning = false) {
+    gtActiveTab = tab === "calc" ? "calc" : "gauntlet";
+    $("gt-tab-gauntlet").classList.toggle("active", gtActiveTab === "gauntlet");
+    $("gt-tab-calc").classList.toggle("active", gtActiveTab === "calc");
+    $("gt-controls-gauntlet").classList.toggle("hidden", gtActiveTab !== "gauntlet");
+    $("gt-controls-calc").classList.toggle("hidden", gtActiveTab !== "calc");
+    $("gt-view-gauntlet").classList.toggle("hidden", gtActiveTab !== "gauntlet");
+    $("gt-view-calc").classList.toggle("hidden", gtActiveTab !== "calc");
+    $("btn-gauntlet-start").classList.toggle("hidden", isRunning || gtActiveTab !== "gauntlet");
+    $("btn-calc-start").classList.toggle("hidden", isRunning || gtActiveTab !== "calc");
+  }
 
   function renderMiniBoardHtml(boardStr) {
     let html = `<div class="mini-board">`;
@@ -1493,15 +1630,17 @@
   function renderGauntletStatus(gs) {
     if (!gs || !gs.ok) return;
 
-    // Populate thread selector once
-    const thSel = $("gt-threads");
-    if (thSel.options.length === 0) {
-      const maxC = gs.cpu_cores || 4;
-      for (let c = 1; c <= maxC; c++) {
-        const opt = new Option(`${c} ${c === 1 ? "thread" : "threads"}${c === maxC ? " (all cores)" : ""}`, String(c));
-        thSel.add(opt);
+    // Populate thread selectors once
+    for (const selId of ["gt-threads", "calc-threads"]) {
+      const thSel = $(selId);
+      if (thSel && thSel.options.length === 0) {
+        const maxC = gs.cpu_cores || 4;
+        for (let c = 1; c <= maxC; c++) {
+          const opt = new Option(`${c} ${c === 1 ? "thread" : "threads"}${c === maxC ? " (all cores)" : ""}`, String(c));
+          thSel.add(opt);
+        }
+        thSel.value = String(maxC);
       }
-      thSel.value = String(maxC);
     }
 
     const oppSel = $("gt-opponent");
@@ -1511,7 +1650,14 @@
       oppSel.value = "internal";
     }
 
-    $("btn-gauntlet-start").classList.toggle("hidden", gs.running);
+    if (gs.running && gs.calc_mode && gtActiveTab !== "calc") {
+      setGauntletTab("calc", true);
+    } else if (gs.running && !gs.calc_mode && gtActiveTab !== "gauntlet") {
+      setGauntletTab("gauntlet", true);
+    } else {
+      $("btn-gauntlet-start").classList.toggle("hidden", gs.running || gtActiveTab !== "gauntlet");
+      $("btn-calc-start").classList.toggle("hidden", gs.running || gtActiveTab !== "calc");
+    }
     $("btn-gauntlet-stop").classList.toggle("hidden", !gs.running);
 
     const pct =
@@ -1522,7 +1668,9 @@
 
     if (gs.running) {
       $("gt-progress-text").textContent = `${gs.completed_games}/${gs.scheduled_games} games • ${gs.num_threads} threads • ${gs.elapsed_sec.toFixed(1)}s`;
-      $("gauntlet-sub").textContent = `Running vs ${gs.opponent} (${gs.num_threads} parallel threads) • Auto-saving to ${gs.elo_file}`;
+      $("gauntlet-sub").textContent = gs.calc_mode
+        ? `Adaptive Elo Calculator: ${gs.calc.subject_label} vs Stockfish • Auto-saving to ${gs.elo_file}`
+        : `Running vs ${gs.opponent} (${gs.num_threads} parallel threads) • Auto-saving to ${gs.elo_file}`;
     } else if (gs.updated_at) {
       $("gt-progress-text").textContent = `Saved (${gs.updated_at})`;
       $("gauntlet-sub").textContent = `Last calibration: ${gs.opponent} • Saved in ${gs.elo_file}`;
@@ -1554,8 +1702,9 @@
             : lp.state === "stopped"
             ? "Stopped"
             : "Pending";
+        const botLabel = lp.engine === "az" ? `🧠 ${lp.name}` : `Titan-C L${lp.level} ${lp.name}`;
         return `<tr>
-          <td><strong>Titan-C L${lp.level} ${lp.name}</strong></td>
+          <td><strong>${botLabel}</strong></td>
           <td>${lp.opponent}</td>
           <td class="${stCls}">${stTxt}</td>
           <td>${wdl}</td>
@@ -1564,6 +1713,50 @@
         </tr>`;
       })
       .join("");
+
+    // Render Precision Elo Calculator Dashboard
+    const cs = gs.calc;
+    if (cs && cs.active) {
+      $("calc-hero-bot").textContent = cs.subject_label || "Bot Calibration";
+      if (cs.games_done > 0) {
+        $("calc-hero-elo").textContent = `${cs.est_elo} Elo  (±${cs.ci_half})`;
+        const floorNote = cs.hit_sf_floor ? " • Below SF 1320 floor (extrapolated)" : "";
+        $("calc-hero-ci").textContent = `95% Confidence Interval: ${cs.ci_low} – ${cs.ci_high} Elo (target ±${cs.target_ci})${floorNote}`;
+      } else {
+        $("calc-hero-elo").textContent = "Calibrating...";
+        $("calc-hero-ci").textContent = `Starting adaptive Stockfish bracket at SF ${cs.current_anchor}...`;
+      }
+      $("calc-st-games").textContent = `${cs.games_done} / ${cs.max_games}`;
+      $("calc-st-wdl").textContent = `${cs.wins} / ${cs.draws} / ${cs.losses}`;
+      $("calc-st-anchor").textContent = cs.current_anchor ? `SF ${cs.current_anchor}` : "—";
+      $("calc-st-status").textContent = gs.running
+        ? "Bracketing..."
+        : cs.converged
+        ? "Converged ✓"
+        : cs.games_done > 0
+        ? "Complete"
+        : "Ready";
+
+      const buckets = cs.buckets || [];
+      if (buckets.length > 0) {
+        $("calc-buckets-body").innerHTML = buckets
+          .slice()
+          .sort((a, b) => a.anchor - b.anchor)
+          .map((b) => {
+            const n = b.wins + b.draws + b.losses;
+            const sc = n > 0 ? (((b.wins + 0.5 * b.draws) / n) * 100).toFixed(1) + "%" : "—";
+            return `<tr>
+              <td><strong>Stockfish ${b.anchor}</strong></td>
+              <td>+${b.wins} =${b.draws} -${b.losses}</td>
+              <td>${sc}</td>
+              <td>${n}</td>
+            </tr>`;
+          })
+          .join("");
+      } else {
+        $("calc-buckets-body").innerHTML = `<tr><td colspan="4" class="empty-hint">Waiting for first batch of games to finish...</td></tr>`;
+      }
+    }
 
     const wSec = $("gt-workers-section");
     const wGrid = $("gt-workers-grid");
@@ -1630,6 +1823,7 @@
 
   async function openGauntletModal() {
     $("gauntlet-modal").classList.remove("hidden");
+    syncUrl(gtActiveTab === "calc" ? "/elo-calculator" : "/elo-arena");
     const gs = await api("/api/gauntlet/status", "GET");
     renderGauntletStatus(gs);
     if (gs.running) {
@@ -1640,48 +1834,529 @@
   function closeGauntletModal() {
     $("gauntlet-modal").classList.add("hidden");
     stopGauntletPolling();
+    syncUrl(underlyingBaseRoute());
   }
 
-  // ==========================================================================
-  // Zero-C AlphaZero Self-Play Training Studio Modal
-  // ==========================================================================
-  let azPollTimer = null;
+  let spectateActive = false;
+  let spectateTimer = null;
+  let spectateGameId = -1;
+  let spectateLastSeq = -1;
+  let spectateLastPly = -1;
+  let spectateLastFen = "";
+  let spectateArrows = [];
+  let spectateToastTimer = null;
 
-  function buildLineChartSvg(seriesList, yMin, yMax, unit = "") {
-    const W = 440, H = 138, padL = 36, padR = 12, padT = 12, padB = 22;
-    const pw = W - padL - padR, ph = H - padT - padB;
-    const maxLen = Math.max(...seriesList.map((s) => s.vals.length));
-    if (maxLen < 1) return `<div class="empty-hint">Waiting for Gen 1...</div>`;
-    const span = Math.max(1e-5, yMax - yMin);
-    const sx = (i) => padL + (maxLen === 1 ? pw / 2 : (i / (maxLen - 1)) * pw);
-    const sy = (v) => padT + ph - ((Math.max(yMin, Math.min(yMax, v)) - yMin) / span) * ph;
+  function uciSqToIdx(sqStr) {
+    if (!sqStr || sqStr.length < 2) return -1;
+    const f = sqStr.charCodeAt(0) - 97;
+    const r = sqStr.charCodeAt(1) - 49;
+    if (f < 0 || f > 7 || r < 0 || r > 7) return -1;
+    return r * 8 + f;
+  }
 
-    let grid = "";
-    for (let g = 0; g <= 2; g++) {
-      const val = yMin + (span * g) / 2;
-      const y = sy(val).toFixed(1);
-      grid += `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="rgba(139,148,158,0.18)" stroke-dasharray="3,3"/>`;
-      grid += `<text x="${padL - 5}" y="${Number(y) + 3}" fill="#8b949e" font-size="9" text-anchor="end">${val.toFixed(unit === "%" ? 0 : 1)}${unit}</text>`;
-    }
+  function showSpectateToast(msg) {
+    const t = $("sp-toast");
+    if (!t) return;
+    t.textContent = msg;
+    t.classList.remove("hidden");
+    if (spectateToastTimer) clearTimeout(spectateToastTimer);
+    spectateToastTimer = setTimeout(() => t.classList.add("hidden"), 3500);
+  }
 
-    let paths = "";
-    for (const s of seriesList) {
-      if (s.vals.length === 0) continue;
-      const pts = s.vals.map((v, i) => `${sx(i).toFixed(1)},${sy(v).toFixed(1)}`).join(" ");
-      if (s.vals.length === 1) {
-        paths += `<circle cx="${sx(0).toFixed(1)}" cy="${sy(s.vals[0]).toFixed(1)}" r="4" fill="${s.color}"/>`;
-      } else {
-        paths += `<polyline fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" points="${pts}"/>`;
-        const last = s.vals[s.vals.length - 1];
-        paths += `<circle cx="${sx(s.vals.length - 1).toFixed(1)}" cy="${sy(last).toFixed(1)}" r="3.2" fill="${s.color}"/>`;
+  function renderSpectateBoard(g) {
+    const bstr = g.board || "";
+    const fromSq = g.last_uci && g.last_uci.length >= 4 ? uciSqToIdx(g.last_uci.slice(0, 2)) : -1;
+    const toSq = g.last_uci && g.last_uci.length >= 4 ? uciSqToIdx(g.last_uci.slice(2, 4)) : -1;
+
+    boardEl.innerHTML = "";
+    for (let row = 0; row < 8; row++) {
+      for (let col = 0; col < 8; col++) {
+        const rank = flipped ? row : 7 - row;
+        const file = flipped ? 7 - col : col;
+        const sq = rank * 8 + file;
+        const isLight = (rank + file) % 2 !== 0;
+
+        const sqEl = document.createElement("div");
+        sqEl.className = `square ${isLight ? "light" : "dark"}`;
+        sqEl.dataset.sq = String(sq);
+        if (sq === fromSq || sq === toSq) {
+          sqEl.classList.add("last-move");
+        }
+        if (col === 0) {
+          const rl = document.createElement("span");
+          rl.className = "coord-rank";
+          rl.textContent = String(rank + 1);
+          sqEl.appendChild(rl);
+        }
+        if (row === 7) {
+          const fl = document.createElement("span");
+          fl.className = "coord-file";
+          fl.textContent = String.fromCharCode(97 + file);
+          sqEl.appendChild(fl);
+        }
+        const ch = bstr[sq];
+        if (ch && ch !== " " && ch !== ".") {
+          const wrap = document.createElement("div");
+          wrap.className = "piece-wrap";
+          wrap.innerHTML = PIECE_SVGS[ch] || "";
+          sqEl.appendChild(wrap);
+        }
+        boardEl.appendChild(sqEl);
       }
     }
 
-    return `<svg viewBox="0 0 ${W} ${H}" class="az-svg">${grid}${paths}<text x="${W / 2}" y="${H - 4}" fill="#8b949e" font-size="9" text-anchor="middle">Generations (1..${maxLen})</text></svg>`;
+    // Top-3 live MCTS candidate arrows
+    spectateArrows = [];
+    for (const t of (g.top || []).slice(0, 3)) {
+      if (t.uci && t.uci.length >= 4 && t.visits > 0) {
+        const f = uciSqToIdx(t.uci.slice(0, 2));
+        const to = uciSqToIdx(t.uci.slice(2, 4));
+        if (f >= 0 && to >= 0) spectateArrows.push({ from: f, to });
+      }
+    }
+    renderArrows();
+  }
+
+  function pickNextLiveGame(live, excludeId) {
+    if (!live || live.length === 0) return null;
+    const candidates = live.filter((x) => x.id !== excludeId);
+    const pool = candidates.length > 0 ? candidates : live;
+    // Prefer an active midgame (ply >= 10) for immediate action
+    const mid = pool.filter((x) => (x.ply || 0) >= 10);
+    const chosenPool = mid.length > 0 ? mid : pool;
+    return chosenPool[Math.floor(Math.random() * chosenPool.length)];
+  }
+
+  function renderSpectateFrame(az) {
+    if (!spectateActive || !az || !az.ok) return;
+    const isRunning = Boolean(az.running && az.proc_alive !== false);
+    const live = az.live_games || [];
+
+    // Update Training HUD stats regardless of whether a game is active
+    const ph = $("sp-phase");
+    if (ph) {
+      ph.textContent = isRunning ? (az.phase === "training" ? "FP16 TRAIN" : "SELF-PLAY") : "IDLE";
+      ph.className = "az-phase-badge " + (isRunning ? (az.phase === "training" ? "az-ph-train" : "az-ph-play") : "az-ph-idle");
+    }
+    const hist = az.history || [];
+    const lastH = hist.length > 0 ? hist[hist.length - 1] : null;
+    if ($("sp-gen")) $("sp-gen").textContent = `Gen ${az.gen || 0}`;
+    if ($("sp-games")) $("sp-games").textContent = `${(az.total_games || 0).toLocaleString()} (${Math.round(az.games_per_hr || 0).toLocaleString()}/hr)`;
+    if ($("sp-acc")) $("sp-acc").textContent = lastH ? `${lastH.pol_acc}%` : "—";
+    if ($("sp-loss")) $("sp-loss").textContent = lastH ? String(lastH.loss) : "—";
+    if ($("sp-gpu")) {
+      const u = az.gpu_util != null ? `${az.gpu_util}%` : "FP16";
+      const tmp = az.gpu_temp != null ? ` ${az.gpu_temp}°C` : "";
+      const eps = az.evals_per_sec ? ` • ${Math.round(az.evals_per_sec).toLocaleString()}/s` : "";
+      $("sp-gpu").textContent = `${u}${tmp}${eps}`;
+    }
+
+    if (live.length === 0) {
+      if ($("sp-game-title")) $("sp-game-title").textContent = isRunning ? "Waiting for live games..." : "Training is paused (start training in Lab)";
+      return;
+    }
+
+    let g = live.find((x) => x.id === spectateGameId);
+    if (!g) {
+      g = pickNextLiveGame(live, -1);
+      spectateGameId = g.id;
+      spectateLastSeq = g.seq != null ? g.seq : -1;
+      spectateLastPly = g.ply || 0;
+    } else {
+      const seqChanged = g.seq != null && spectateLastSeq >= 0 && g.seq !== spectateLastSeq;
+      const plyReset = spectateLastPly >= 6 && (g.ply || 0) < spectateLastPly;
+      if (seqChanged || plyReset) {
+        const prevNum = g.id + 1;
+        const nextG = pickNextLiveGame(live, g.id);
+        if (nextG) {
+          g = nextG;
+          spectateGameId = g.id;
+        }
+        spectateLastSeq = g.seq != null ? g.seq : -1;
+        spectateLastPly = g.ply || 0;
+        showSpectateToast(`Game #${prevNum} ended — jumped to live Game #${g.id + 1} (Ply ${g.ply})`);
+      } else if ((g.ply || 0) > spectateLastPly) {
+        spectateLastPly = g.ply || 0;
+        playSound("move");
+      }
+      if (g.seq != null) spectateLastSeq = g.seq;
+    }
+
+    spectateLastFen = g.fen || "";
+    renderSpectateBoard(g);
+
+    const wp = Math.round((g.w || 0) * 100);
+    const dp = Math.round((g.d || 0) * 100);
+    const lp = Math.max(0, 100 - wp - dp);
+    const whiteShare = Math.max(4, Math.min(96, (g.w || 0) * 100 + (g.d || 0) * 50));
+    $("eval-fill-white").style.height = `${whiteShare.toFixed(1)}%`;
+    const q = Math.max(-0.99, Math.min(0.99, (g.w || 0) - (g.l || 0)));
+    const cpEst = Math.round(290 * Math.atanh(q)) / 100;
+    $("eval-label").textContent = `${cpEst >= 0 ? "+" : ""}${cpEst.toFixed(1)}`;
+
+    const genLbl = `Zero-C v2 (Gen ${az.gen || 0})`;
+    $("top-name").textContent = flipped ? `${genLbl} • White` : `${genLbl} • Black`;
+    $("bottom-name").textContent = flipped ? `${genLbl} • Black` : `${genLbl} • White`;
+    const bTurn = g.fen && g.fen.includes(" b ");
+    $("status-pill").textContent = `Live Self-Play • ${bTurn ? "Black" : "White"} thinking (${g.sims_done}/${g.sims_target})`;
+    $("opening-pill").textContent = `Self-Play Game #${g.id + 1}`;
+    $("meta-move").textContent = `Ply ${g.ply}${g.last_san ? ` • Last: ${g.last_san}` : ""}`;
+
+    if ($("sp-game-title")) $("sp-game-title").textContent = `Spectating Game #${g.id + 1} • Ply ${g.ply}`;
+    if ($("sp-cap-tag")) {
+      $("sp-cap-tag").textContent = `${g.full_search ? "FULL" : "FAST"} ${g.sims_done}/${g.sims_target}`;
+      $("sp-cap-tag").className = `az-cap-tag ${g.full_search ? "full" : "fast"}`;
+    }
+    if ($("sp-wdl-text")) $("sp-wdl-text").textContent = `W:${wp}% D:${dp}% B:${lp}%`;
+    if ($("sp-ml-text")) $("sp-ml-text").textContent = `~${Math.round(g.moves_left || 0)} plies`;
+    if ($("sp-top-moves")) {
+      const tops = (g.top || [])
+        .map((t, i) => {
+          const cols = ["#3fb950", "#58a6ff", "#ffa657"];
+          return `<span class="az-top-chip" style="border-left:3px solid ${cols[i % 3]}">${t.san} <b>${t.visits}v</b> (${Math.round(t.prior * 100)}%)</span>`;
+        })
+        .join("");
+      $("sp-top-moves").innerHTML = tops || `<span class="az-top-chip">Searching root...</span>`;
+    }
+  }
+
+  async function pollSpectateTick() {
+    if (!spectateActive) return;
+    const az = await api("/api/az/status", "GET");
+    renderSpectateFrame(az);
+  }
+
+  async function startSpectateTraining(gameId = -1) {
+    clearWatchTimer();
+    closeAzModal(true);
+    showBoardWorkspace(true);
+    spectateActive = true;
+    spectateGameId = gameId;
+    spectateLastSeq = -1;
+    spectateLastPly = -1;
+    spectateArrows = [];
+    $("spectate-hud").classList.remove("hidden");
+    $("analysis-bar").classList.add("hidden");
+    $("watch-bar").classList.add("hidden");
+    $("puzzle-bar").classList.add("hidden");
+    syncUrl(gameId >= 0 ? `/spectate/${gameId + 1}` : "/spectate");
+    if (spectateTimer) clearInterval(spectateTimer);
+    await pollSpectateTick();
+    spectateTimer = setInterval(pollSpectateTick, 700);
+    logTerm("Entered Live Self-Play Spectate Mode (auto-advances when games finish).", "term-ok");
+  }
+
+  function stopSpectateTraining(restoreBoard = false) {
+    if (!spectateActive) return;
+    spectateActive = false;
+    spectateArrows = [];
+    if (spectateTimer) {
+      clearInterval(spectateTimer);
+      spectateTimer = null;
+    }
+    if ($("spectate-hud")) $("spectate-hud").classList.add("hidden");
+    if (restoreBoard && state) {
+      applyState(state, false);
+      syncUrl(underlyingBaseRoute());
+    }
+  }
+
+  // ==========================================================================
+  // Zero-C AlphaZero Self-Play Training Studio Modal (v2 Dynamic Mission Control)
+  // ==========================================================================
+  let azPollTimer = null;
+  let azChartWindow = 0; // 0 = full run, 250 = last 250, 60 = last 60
+  let azShowEma = true;
+  let azLastData = null;
+  let azConfigHydrated = false;
+  let azLastChartKey = "";
+  let azChartDeferred = false;
+
+  function setSelectIfOptionExists(sel, val) {
+    if (!sel || val == null) return;
+    const str = String(val);
+    if ([...sel.options].some((o) => o.value === str)) {
+      sel.value = str;
+    }
+  }
+
+  function computeEma(vals, alpha = 0.22) {
+    if (!vals.length) return [];
+    const out = [vals[0]];
+    for (let i = 1; i < vals.length; i++) {
+      out.push(alpha * vals[i] + (1 - alpha) * out[i - 1]);
+    }
+    return out;
+  }
+
+  function dynamicBounds(vals, { clampMin = null, clampMax = null, minSpan = 0.05 } = {}) {
+    const clean = vals.filter((v) => v != null && Number.isFinite(v));
+    if (!clean.length) return [0, 1];
+    let lo = Math.min(...clean);
+    let hi = Math.max(...clean);
+    if (hi - lo < minSpan) {
+      const mid = (hi + lo) / 2;
+      lo = mid - minSpan / 2;
+      hi = mid + minSpan / 2;
+    } else {
+      const pad = (hi - lo) * 0.14;
+      lo -= pad;
+      hi += pad;
+    }
+    if (clampMin != null && lo < clampMin) lo = clampMin;
+    if (clampMax != null && hi > clampMax) hi = clampMax;
+    if (hi <= lo) hi = lo + minSpan;
+    return [lo, hi];
+  }
+
+  function fmtAxisVal(v, fmt) {
+    if (fmt === "lr") return v < 0.001 ? v.toExponential(1) : v.toFixed(4);
+    if (fmt === "%") return `${Math.round(v)}%`;
+    if (fmt === "int") return `${Math.round(v)}`;
+    if (fmt === "2f") return v.toFixed(2);
+    if (fmt === "3f") return v.toFixed(3);
+    return Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(2);
+  }
+
+  function renderDynamicChart(containerEl, gens, seriesList, opts = {}) {
+    const n = gens.length;
+    if (n < 1) {
+      containerEl.innerHTML = `<div class="empty-hint">${opts.emptyText || "Waiting for Gen 1..."}</div>`;
+      return;
+    }
+    const hasRight = seriesList.some((s) => s.axis === "right" && s.vals.some((v) => v != null));
+    const W = 490, H = 162, padL = 44, padR = hasRight ? 46 : 16, padT = 14, padB = 24;
+    const pw = W - padL - padR, ph = H - padT - padB;
+
+    const leftSeries = seriesList.filter((s) => s.axis !== "right");
+    const rightSeries = seriesList.filter((s) => s.axis === "right");
+
+    const [lMin, lMax] = dynamicBounds(
+      leftSeries.flatMap((s) => s.vals),
+      opts.leftBounds || { clampMin: 0 }
+    );
+    const [rMin, rMax] = hasRight
+      ? dynamicBounds(rightSeries.flatMap((s) => s.vals), opts.rightBounds || { clampMin: 0 })
+      : [0, 1];
+
+    const sx = (i) => padL + (n === 1 ? pw / 2 : (i / (n - 1)) * pw);
+    const syL = (v) => padT + ph - ((Math.max(lMin, Math.min(lMax, v)) - lMin) / Math.max(1e-9, lMax - lMin)) * ph;
+    const syR = (v) => padT + ph - ((Math.max(rMin, Math.min(rMax, v)) - rMin) / Math.max(1e-9, rMax - rMin)) * ph;
+
+    const gradId = `azg_${containerEl.id}_${Math.floor(Math.random() * 1e6)}`;
+    const primaryColor = (leftSeries[0] && leftSeries[0].color) || "#58a6ff";
+    let defs = `<defs><linearGradient id="${gradId}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${primaryColor}" stop-opacity="0.22"/><stop offset="100%" stop-color="${primaryColor}" stop-opacity="0.01"/></linearGradient></defs>`;
+
+    // Horizontal grid + Left/Right dynamic Y ticks (4 intervals)
+    let grid = "";
+    const leftColor = (leftSeries[0] && leftSeries[0].color) || "#8b949e";
+    const rightColor = (rightSeries[0] && rightSeries[0].color) || "#8b949e";
+    for (let g = 0; g <= 3; g++) {
+      const frac = g / 3;
+      const y = (padT + ph - frac * ph).toFixed(1);
+      grid += `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="rgba(139,148,158,0.16)" stroke-dasharray="${g === 0 ? "" : "3,3"}"/>`;
+      const lv = lMin + (lMax - lMin) * frac;
+      grid += `<text x="${padL - 6}" y="${Number(y) + 3}" fill="${leftSeries.length === 1 ? leftColor : "#9ea7b3"}" font-size="9.5" text-anchor="end">${fmtAxisVal(lv, opts.leftFmt || "2f")}</text>`;
+      if (hasRight) {
+        const rv = rMin + (rMax - rMin) * frac;
+        grid += `<text x="${W - padR + 6}" y="${Number(y) + 3}" fill="${rightColor}" font-size="9.5" text-anchor="start">${fmtAxisVal(rv, opts.rightFmt || "2f")}</text>`;
+      }
+    }
+
+    // X-axis Gen ticks
+    const xTickIdxs = n === 1 ? [0] : n === 2 ? [0, 1] : [0, Math.floor((n - 1) / 2), n - 1];
+    for (const idx of xTickIdxs) {
+      const x = sx(idx).toFixed(1);
+      grid += `<text x="${x}" y="${H - 6}" fill="#8b949e" font-size="9" text-anchor="middle">Gen ${gens[idx]}</text>`;
+    }
+
+    // Series polylines + optional EMA trendline + live latest value dot
+    let paths = "";
+    for (let si = 0; si < seriesList.length; si++) {
+      const s = seriesList[si];
+      const sy = s.axis === "right" ? syR : syL;
+      const validPts = [];
+      for (let i = 0; i < n; i++) {
+        if (s.vals[i] != null && Number.isFinite(s.vals[i])) {
+          validPts.push([i, s.vals[i]]);
+        }
+      }
+      if (!validPts.length) continue;
+
+      const rawStr = validPts.map(([i, v]) => `${sx(i).toFixed(1)},${sy(v).toFixed(1)}`).join(" ");
+      // Area fill under first left series
+      if (si === 0 && validPts.length > 1) {
+        const firstX = sx(validPts[0][0]).toFixed(1);
+        const lastX = sx(validPts[validPts.length - 1][0]).toFixed(1);
+        const baseY = (padT + ph).toFixed(1);
+        paths += `<polygon fill="url(#${gradId})" points="${firstX},${baseY} ${rawStr} ${lastX},${baseY}"/>`;
+      }
+
+      const dashAttr = s.dashed ? ` stroke-dasharray="5,3"` : "";
+      if (validPts.length === 1) {
+        const [i0, v0] = validPts[0];
+        paths += `<circle cx="${sx(i0).toFixed(1)}" cy="${sy(v0).toFixed(1)}" r="4" fill="${s.color}"/>`;
+      } else if (azShowEma && !s.noEma && validPts.length >= 6) {
+        paths += `<polyline fill="none" stroke="${s.color}" stroke-opacity="0.30" stroke-width="1.3"${dashAttr} points="${rawStr}"/>`;
+        const emaVals = computeEma(validPts.map((p) => p[1]), validPts.length > 80 ? 0.14 : 0.25);
+        const emaStr = validPts.map(([i], k) => `${sx(i).toFixed(1)},${sy(emaVals[k]).toFixed(1)}`).join(" ");
+        paths += `<polyline fill="none" stroke="${s.color}" stroke-width="2.2" stroke-linejoin="round"${dashAttr} points="${emaStr}"/>`;
+      } else {
+        paths += `<polyline fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round"${dashAttr} points="${rawStr}"/>`;
+      }
+
+      const [li, lv] = validPts[validPts.length - 1];
+      paths += `<circle cx="${sx(li).toFixed(1)}" cy="${sy(lv).toFixed(1)}" r="3.4" fill="${s.color}" stroke="#0d1117" stroke-width="1.2"/>`;
+    }
+
+    containerEl.innerHTML =
+      `<svg viewBox="0 0 ${W} ${H}" class="az-svg">${defs}${grid}${paths}` +
+      `<line class="az-hover-line" x1="0" y1="${padT}" x2="0" y2="${padT + ph}" stroke="rgba(255,255,255,0.35)" stroke-dasharray="2,2" style="display:none"/>` +
+      `</svg><div class="az-tooltip hidden"></div>`;
+
+    // Interactive Hover Crosshair + Exact Value Tooltip
+    const svg = containerEl.querySelector("svg");
+    const hoverLine = containerEl.querySelector(".az-hover-line");
+    const tip = containerEl.querySelector(".az-tooltip");
+    svg.addEventListener("mousemove", (ev) => {
+      containerEl.dataset.hovering = "1";
+      const rect = svg.getBoundingClientRect();
+      const relX = ((ev.clientX - rect.left) / Math.max(1, rect.width)) * W;
+      const frac = Math.max(0, Math.min(1, (relX - padL) / Math.max(1, pw)));
+      const idx = n === 1 ? 0 : Math.round(frac * (n - 1));
+      const xPos = sx(idx);
+      hoverLine.setAttribute("x1", xPos.toFixed(1));
+      hoverLine.setAttribute("x2", xPos.toFixed(1));
+      hoverLine.style.display = "block";
+      const rows = seriesList
+        .map((s) => {
+          const v = s.vals[idx];
+          if (v == null || !Number.isFinite(v)) return "";
+          return `<div><span style="color:${s.color}">&#9679;</span> ${s.label}: <b>${fmtAxisVal(v, s.fmt || "2f")}</b></div>`;
+        })
+        .filter(Boolean)
+        .join("");
+      tip.innerHTML = `<div style="color:#8b949e;margin-bottom:2px;">Gen ${gens[idx]}</div>${rows}`;
+      tip.classList.remove("hidden");
+      const px = (xPos / W) * rect.width;
+      const onRight = px > rect.width * 0.58;
+      tip.style.left = onRight ? `${Math.max(4, px - tip.offsetWidth - 10)}px` : `${Math.min(rect.width - tip.offsetWidth - 4, px + 10)}px`;
+      tip.style.top = "8px";
+    });
+    svg.addEventListener("mouseleave", () => {
+      containerEl.dataset.hovering = "0";
+      hoverLine.style.display = "none";
+      tip.classList.add("hidden");
+      if (azChartDeferred && azLastData) {
+        azChartDeferred = false;
+        updateAzChartsOnly(azLastData, true);
+      }
+    });
+  }
+
+  function updateAzChartsOnly(az, force = false) {
+    if (!az) return;
+    const allHist = az.history || [];
+    const lastGen = allHist.length > 0 ? (allHist[allHist.length - 1].gen || allHist.length) : 0;
+    const key = `${allHist.length}:${lastGen}:${azChartWindow}:${azShowEma ? 1 : 0}`;
+    if (!force && key === azLastChartKey) {
+      return; // Nothing changed — keep existing DOM & hover tooltip intact!
+    }
+    // If the user is actively scrubbing any chart when a new gen ticks, defer redraw until mouseleave!
+    const chartEls = [$("az-policy-chart"), $("az-value-chart"), $("az-dynamics-chart"), $("az-balance-chart")];
+    if (!force && chartEls.some((el) => el && el.dataset.hovering === "1")) {
+      azChartDeferred = true;
+      return;
+    }
+    azLastChartKey = key;
+    azChartDeferred = false;
+
+    const hist = azChartWindow > 0 && allHist.length > azChartWindow
+      ? allHist.slice(-azChartWindow)
+      : allHist;
+
+    if (hist.length === 0) {
+      $("az-policy-chart").innerHTML = `<div class="empty-hint">Policy curves appear after Gen 1 completes.</div>`;
+      $("az-value-chart").innerHTML = `<div class="empty-hint">Value &amp; Moves-Left curves appear after Gen 1 completes.</div>`;
+      $("az-dynamics-chart").innerHTML = `<div class="empty-hint">Game dynamics appear after Gen 1 completes.</div>`;
+      $("az-balance-chart").innerHTML = `<div class="empty-hint">Color balance &amp; LR schedule appear after Gen 1 completes.</div>`;
+      return;
+    }
+
+    const gens = hist.map((h, i) => h.gen || (i + 1));
+
+    // Chart 1: Policy Loss (L) + Policy Top-1 Accuracy % (R)
+    renderDynamicChart(
+      $("az-policy-chart"),
+      gens,
+      [
+        { label: "Policy Loss", vals: hist.map((h) => h.pol_loss), color: "#58a6ff", axis: "left", fmt: "2f" },
+        { label: "Top-1 Acc", vals: hist.map((h) => h.pol_acc), color: "#a371f7", axis: "right", fmt: "%" },
+      ],
+      {
+        leftFmt: "2f",
+        rightFmt: "%",
+        leftBounds: { clampMin: 0, minSpan: 0.25 },
+        rightBounds: { clampMin: 0, clampMax: 100, minSpan: 6 },
+      }
+    );
+
+    // Chart 2: WDL Loss (L) + Moves-Left Loss (R)
+    renderDynamicChart(
+      $("az-value-chart"),
+      gens,
+      [
+        { label: "WDL Loss", vals: hist.map((h) => h.wdl_loss), color: "#3fb950", axis: "left", fmt: "3f" },
+        { label: "Moves-Left", vals: hist.map((h) => h.ml_loss), color: "#39c5cf", axis: "right", fmt: "3f" },
+      ],
+      {
+        leftFmt: "2f",
+        rightFmt: "3f",
+        leftBounds: { clampMin: 0, minSpan: 0.08 },
+        rightBounds: { clampMin: 0, minSpan: 0.02 },
+      }
+    );
+
+    // Chart 3: Decisive % (L) + Avg Game Length in Plies (R)
+    renderDynamicChart(
+      $("az-dynamics-chart"),
+      gens,
+      [
+        { label: "Decisive", vals: hist.map((h) => h.decisive_pct), color: "#e3b341", axis: "left", fmt: "%" },
+        { label: "Avg Plies", vals: hist.map((h) => h.avg_plies), color: "#ffa657", axis: "right", fmt: "int" },
+      ],
+      {
+        leftFmt: "%",
+        rightFmt: "int",
+        leftBounds: { clampMin: 0, clampMax: 100, minSpan: 10 },
+        rightBounds: { clampMin: 0, minSpan: 16 },
+      }
+    );
+
+    // Chart 4: White/Black Win % (L) + Active Learning Rate (R)
+    const lrVals = hist.map((h) => (h.lr != null ? h.lr : az.lr != null ? az.lr : null));
+    const wVals = hist.map((h) => (h.white_pct != null ? h.white_pct : h.decisive_pct != null ? h.decisive_pct * 0.51 : null));
+    const bVals = hist.map((h) => (h.black_pct != null ? h.black_pct : h.decisive_pct != null ? h.decisive_pct * 0.49 : null));
+    renderDynamicChart(
+      $("az-balance-chart"),
+      gens,
+      [
+        { label: "White Win %", vals: wVals, color: "#f0f6fc", axis: "left", fmt: "%" },
+        { label: "Black Win %", vals: bVals, color: "#8b949e", axis: "left", fmt: "%" },
+        { label: "Learning Rate", vals: lrVals, color: "#f778ba", axis: "right", fmt: "lr", dashed: true, noEma: true },
+      ],
+      {
+        leftFmt: "%",
+        rightFmt: "lr",
+        leftBounds: { clampMin: 0, clampMax: 100, minSpan: 12 },
+        rightBounds: { clampMin: 0, minSpan: 0.0001 },
+      }
+    );
   }
 
   function renderAzStatus(az) {
     if (!az || !az.ok) return;
+    azLastData = az;
     const isRunning = Boolean(az.running && az.proc_alive !== false);
 
     $("btn-az-start").classList.toggle("hidden", isRunning);
@@ -1689,6 +2364,48 @@
     const badge = $("az-phase-badge");
     badge.textContent = isRunning ? (az.phase === "training" ? "FP16 TRAINING" : "SELF-PLAY") : "IDLE";
     badge.className = "az-phase-badge " + (isRunning ? (az.phase === "training" ? "az-ph-train" : "az-ph-play") : "az-ph-idle");
+
+    // Persist & display active session training settings (and lock dropdowns while running!)
+    const cfg = az.config || null;
+    const archSel = $("az-arch");
+    const gamesSel = $("az-games");
+    const playSel = $("az-playouts");
+    const gpgSel = $("az-gpg");
+
+    if (cfg && (isRunning || !azConfigHydrated)) {
+      setSelectIfOptionExists(archSel, cfg.arch);
+      setSelectIfOptionExists(gamesSel, cfg.games);
+      if (cfg.fast_sims != null && cfg.full_sims != null) {
+        setSelectIfOptionExists(playSel, `${cfg.fast_sims},${cfg.full_sims}`);
+      }
+      setSelectIfOptionExists(gpgSel, cfg.games_per_gen);
+      azConfigHydrated = true;
+    }
+    // Lock all 4 controls while actively training; also lock architecture once a run has started
+    if (archSel) archSel.disabled = isRunning || (az.gen > 0);
+    if (gamesSel) gamesSel.disabled = isRunning;
+    if (playSel) playSel.disabled = isRunning;
+    if (gpgSel) gpgSel.disabled = isRunning;
+
+    const sessStrip = $("az-session-strip");
+    const sessTxt = $("az-session-text");
+    if (sessStrip && sessTxt) {
+      if (cfg && (isRunning || (az.gen || 0) > 0)) {
+        const repMaxM = ((az.replay_max || 1200000) / 1e6).toFixed(1);
+        const modePrefix = isRunning ? "Active Session:" : "Last Session Config:";
+        sessStrip.classList.remove("hidden");
+        sessStrip.classList.toggle("paused", !isRunning);
+        sessTxt.innerHTML =
+          `<strong>${modePrefix}</strong> ${az.arch || cfg.arch} &bull; ` +
+          `<strong>${cfg.games}</strong> parallel games &bull; ` +
+          `<strong>${cfg.fast_sims}/${cfg.full_sims}</strong> playout cap &bull; ` +
+          `<strong>${cfg.games_per_gen}</strong> games/gen &bull; ` +
+          `<strong>${repMaxM}M</strong> replay window` +
+          (isRunning ? " <span class=\"term-dim\">(locked while training — stop to adjust)</span>" : "");
+      } else {
+        sessStrip.classList.add("hidden");
+      }
+    }
 
     const hwParts = [`${az.device || "CPU"}${az.fp16 ? " • FP16" : ""}`];
     if (az.gpu_util != null) {
@@ -1710,62 +2427,103 @@
     $("az-progress-text").textContent = isRunning
       ? `Gen ${az.gen}: ${az.gen_games || 0}/${gpg} games • ${az.elapsed_sec || 0}s`
       : az.gen > 0
-      ? `Saved at Gen ${az.gen} (${az.total_games} total games)`
-      : "Ready — click Start Training";
+      ? `Saved at Gen ${az.gen} (${(az.total_games || 0).toLocaleString()} total games)`
+      : "Ready — click Start Training to launch Zero-C v2 (Pro 10×128)";
 
     $("az-m-gen").textContent = `Gen ${az.gen || 0}`;
-    $("az-m-arch").textContent = `${az.arch || "6x96 SE-ResNet"}${az.params ? ` • ${(az.params / 1e6).toFixed(2)}M` : ""}`;
-    $("az-m-games").textContent = String(az.total_games || 0);
+    $("az-m-arch").textContent = `${az.arch || "10x128 SE-ResNet"}${az.params ? ` • ${(az.params / 1e6).toFixed(2)}M` : ""}`;
+    $("az-m-games").textContent = (az.total_games || 0).toLocaleString();
     $("az-m-gph").textContent = `${Math.round(az.games_per_hr || 0).toLocaleString()} games/hr`;
+
+    const repSize = az.replay_size || 0;
+    const repMax = az.replay_max || 1200000;
+    const repPct = Math.min(100, (repSize / Math.max(1, repMax)) * 100);
     $("az-m-pos").textContent = (az.total_positions || 0).toLocaleString();
-    $("az-m-replay").textContent = `Replay: ${(az.replay_size || 0).toLocaleString()}`;
+    $("az-m-replay").textContent = `Buffer: ${repSize.toLocaleString()} / ${(repMax / 1e6).toFixed(1)}M (${repPct.toFixed(0)}%)`;
+    if ($("az-replay-fill")) $("az-replay-fill").style.width = `${repPct.toFixed(1)}%`;
+
     $("az-m-eps").textContent = `${Math.round(az.evals_per_sec || 0).toLocaleString()} /s`;
-    const vramStr = `${az.vram_mb || 0} MB`;
     const thrSub = [];
     if (az.avg_batch) thrSub.push(`Batch ~${Math.round(az.avg_batch)}`);
-    thrSub.push(vramStr);
+    thrSub.push(`${az.vram_mb || 0} MB`);
     if (az.cpu_pct) thrSub.push(`CPU ${Math.round(az.cpu_pct)}%`);
     $("az-m-vram").textContent = thrSub.join(" • ");
 
     const hist = az.history || [];
     const lastH = hist.length > 0 ? hist[hist.length - 1] : null;
+    const prevIdx = Math.max(0, hist.length - 21);
+    const prevH = hist.length >= 4 ? hist[prevIdx] : null;
+
     $("az-m-acc").textContent = lastH ? `${lastH.pol_acc}%` : "—";
-    $("az-m-loss").textContent = lastH ? `Loss: ${lastH.loss}` : "Loss: —";
+    if (lastH && prevH) {
+      const dAcc = lastH.pol_acc - prevH.pol_acc;
+      const arrow = dAcc >= 0 ? "▲" : "▼";
+      const clr = dAcc >= 0 ? "#56d364" : "#f85149";
+      $("az-m-acc-delta").innerHTML = `<span style="color:${clr}">${arrow} ${dAcc >= 0 ? "+" : ""}${dAcc.toFixed(1)}%</span> vs Gen ${prevH.gen}`;
+    } else {
+      $("az-m-acc-delta").textContent = "Trend: gathering data...";
+    }
+
+    $("az-m-loss-big").textContent = lastH ? String(lastH.loss) : "—";
+    $("az-m-loss").textContent = lastH ? `Pol ${lastH.pol_loss} • WDL ${lastH.wdl_loss}` : "Pol: — • WDL: —";
+
+    const curLr = az.lr != null ? az.lr : lastH && lastH.lr != null ? lastH.lr : null;
+    const baseLr = az.base_lr || 0.0015;
+    $("az-m-lr").textContent = curLr != null ? (curLr < 0.001 ? curLr.toExponential(2) : curLr.toFixed(5)) : "—";
+    if (curLr != null) {
+      const lrPct = Math.round((curLr / baseLr) * 100);
+      $("az-m-lr-sub").textContent = `${lrPct}% of peak (Cosine)`;
+    } else {
+      $("az-m-lr-sub").textContent = "Cosine warmup + floor";
+    }
 
     const oc = az.outcomes || { white: 0, draw: 0, black: 0 };
     const ocTot = oc.white + oc.draw + oc.black;
     const decPct = ocTot > 0 ? `${Math.round(((oc.white + oc.black) / ocTot) * 100)}%` : "—";
+    const avgP = lastH && lastH.avg_plies ? `${Math.round(lastH.avg_plies)}p` : "—";
     $("az-m-wdl").textContent = `${oc.white} / ${oc.draw} / ${oc.black}`;
-    $("az-m-dec").textContent = `Decisive: ${decPct}`;
+    $("az-m-dec").textContent = `Decisive ${decPct} • Avg ${avgP}`;
 
-    // Charts
-    if (hist.length > 0) {
-      const totVals = hist.map((h) => h.loss);
-      const polVals = hist.map((h) => h.pol_loss);
-      const wdlVals = hist.map((h) => h.wdl_loss);
-      const maxL = Math.max(2.0, ...totVals) * 1.08;
-      $("az-loss-chart").innerHTML = buildLineChartSvg(
-        [
-          { vals: totVals, color: "#f778ba" },
-          { vals: polVals, color: "#58a6ff" },
-          { vals: wdlVals, color: "#3fb950" },
-        ],
-        0,
-        maxL
-      );
-      $("az-acc-chart").innerHTML = buildLineChartSvg(
-        [
-          { vals: hist.map((h) => h.pol_acc), color: "#a371f7" },
-          { vals: hist.map((h) => h.decisive_pct), color: "#e3b341" },
-        ],
-        0,
-        100,
-        "%"
-      );
-    } else {
-      $("az-loss-chart").innerHTML = `<div class="empty-hint">Loss curves appear after Gen 1 completes.</div>`;
-      $("az-acc-chart").innerHTML = `<div class="empty-hint">Accuracy &amp; decisive curves appear after Gen 1 completes.</div>`;
+    // Mastery Milestones & Live Health Diagnosis
+    const tg = az.total_games || 0;
+    const pa = lastH ? lastH.pol_acc : 0;
+    const msDone = [
+      tg >= 2000 || pa >= 22,
+      tg >= 15000 && pa >= 35,
+      tg >= 60000 && pa >= 48,
+      tg >= 150000 && pa >= 55,
+      tg >= 300000 && pa >= 60,
+      tg >= 750000 && pa >= 66,
+    ];
+    let firstPending = msDone.findIndex((d) => !d);
+    if (firstPending < 0) firstPending = msDone.length;
+    document.querySelectorAll("#az-milestones-track .az-ms-step").forEach((el, idx) => {
+      el.classList.toggle("done", msDone[idx]);
+      el.classList.toggle("active", idx === firstPending && (isRunning || tg > 0));
+    });
+
+    const hp = $("az-health-pill");
+    if (hp) {
+      if (!isRunning && tg === 0) {
+        hp.className = "az-health-pill";
+        hp.textContent = "Ready — Pro 10×128 v2 pipeline armed";
+      } else if (hist.length < 3) {
+        hp.className = "az-health-pill";
+        hp.textContent = "Warming up — building initial self-play replay memory";
+      } else if (lastH && prevH && lastH.pol_acc - prevH.pol_acc >= 0.5) {
+        hp.className = "az-health-pill";
+        hp.textContent = `Healthy learning — Policy Acc climbing +${(lastH.pol_acc - prevH.pol_acc).toFixed(1)}%`;
+      } else if (lastH && prevH && lastH.pol_loss < prevH.pol_loss) {
+        hp.className = "az-health-pill";
+        hp.textContent = `Steady refinement — Policy Loss falling (${prevH.pol_loss} → ${lastH.pol_loss})`;
+      } else {
+        hp.className = "az-health-pill warn";
+        hp.textContent = "Consolidating — replay buffer stabilizing; watch head-to-head vs v1";
+      }
     }
+
+    // Dynamic 2x2 Charts
+    updateAzChartsOnly(az);
 
     // Live Self-Play Mini-Boards
     const live = az.live_games || [];
@@ -1779,7 +2537,7 @@
           const tops = (g.top || [])
             .map((t) => `<span class="az-top-chip">${t.san} <b>${t.visits}</b> (${Math.round(t.prior * 100)}%)</span>`)
             .join("");
-          return `<div class="worker-card az-live-card" data-fen="${g.fen}">
+          return `<div class="worker-card az-live-card" data-fen="${g.fen}" data-gid="${g.id}" title="Click to Spectate Game #${g.id + 1} live on the big board">
             <div class="worker-meta">
               <span>Game #${g.id + 1} &bull; Ply ${g.ply}</span>
               <span class="az-cap-tag ${g.full_search ? "full" : "fast"}">${g.full_search ? "FULL" : "FAST"} ${g.sims_done}/${g.sims_target}</span>
@@ -1798,13 +2556,10 @@
           </div>`;
         })
         .join("");
-      liveGrid.querySelectorAll(".worker-card[data-fen]").forEach((card) => {
+      liveGrid.querySelectorAll(".worker-card[data-gid]").forEach((card) => {
         card.addEventListener("click", async () => {
-          const fen = card.dataset.fen;
-          closeAzModal();
-          showBoardWorkspace();
-          await loadFenString(fen);
-          await enterAnalysisMode();
+          const gid = parseInt(card.dataset.gid, 10);
+          await startSpectateTraining(Number.isFinite(gid) ? gid : -1);
         });
       });
     } else {
@@ -1838,7 +2593,7 @@
         });
       });
     } else {
-      tbody.innerHTML = `<tr><td colspan="7" class="empty-hint">No checkpoints saved yet.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="7" class="empty-hint">No v2 checkpoints saved yet (Zero-C v1 Gen 4320 is immortalized in all bot dropdowns!).</td></tr>`;
     }
 
     // Update Home Card 7 live summary too!
@@ -1871,13 +2626,15 @@
 
   async function openAzModal() {
     $("az-modal").classList.remove("hidden");
+    syncUrl("/zero-c");
     await pollAzStatus();
     startAzPolling();
   }
 
-  function closeAzModal() {
+  function closeAzModal(skipRouteSync = false) {
     $("az-modal").classList.add("hidden");
     stopAzPolling();
+    if (!skipRouteSync) syncUrl(underlyingBaseRoute());
   }
 
   // ==========================================================================
@@ -1913,11 +2670,62 @@
     renderAzStatus(res);
     logTerm("Zero-C training paused cleanly.", "term-warn");
   });
-  $("btn-az-reset").addEventListener("click", async () => {
-    const res = await api("/api/az/reset", "POST");
-    renderAzStatus(res);
-    logTerm("Zero-C checkpoints reset to Gen 0.", "term-warn");
+  $("btn-az-spectate").addEventListener("click", async () => {
+    await startSpectateTraining(-1);
   });
+  $("btn-az-vs-v1").addEventListener("click", async () => {
+    stopSpectateTraining(false);
+    closeAzModal();
+    showBoardWorkspace();
+    await startNewGame("watch", 12, 13);
+    logTerm("Launched Zero-C v2 (White) vs. Immortalized Zero-C v1 Champion Gen 4320 (Black)!", "term-ok");
+  });
+  $("btn-sp-next").addEventListener("click", async () => {
+    if (!spectateActive) return;
+    const az = await api("/api/az/status", "GET");
+    const nextG = pickNextLiveGame((az && az.live_games) || [], spectateGameId);
+    if (nextG) {
+      spectateGameId = nextG.id;
+      spectateLastSeq = nextG.seq != null ? nextG.seq : -1;
+      spectateLastPly = nextG.ply || 0;
+      renderSpectateFrame(az);
+      showSpectateToast(`Switched to live Game #${nextG.id + 1} (Ply ${nextG.ply})`);
+    }
+  });
+  $("btn-sp-analyze").addEventListener("click", async () => {
+    const fen = spectateLastFen;
+    stopSpectateTraining(false);
+    if (fen) {
+      await loadFenString(fen);
+    }
+    await enterAnalysisMode();
+  });
+  $("btn-sp-lab").addEventListener("click", () => {
+    stopSpectateTraining(true);
+    openAzModal();
+  });
+  $("btn-sp-exit").addEventListener("click", () => {
+    stopSpectateTraining(true);
+  });
+  document.querySelectorAll("#az-window-group .az-seg-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll("#az-window-group .az-seg-btn").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      azChartWindow = parseInt(btn.dataset.win, 10) || 0;
+      if (azLastData) updateAzChartsOnly(azLastData);
+    });
+  });
+  if ($("az-chk-ema")) {
+    $("az-chk-ema").addEventListener("change", () => {
+      azShowEma = $("az-chk-ema").checked;
+      if (azLastData) updateAzChartsOnly(azLastData);
+    });
+  }
+  if ($("btn-az-guide-toggle")) {
+    $("btn-az-guide-toggle").addEventListener("click", () => {
+      $("az-guide-card").classList.toggle("hidden");
+    });
+  }
   $("btn-gauntlet-close").addEventListener("click", () => closeGauntletModal());
   $("btn-gauntlet-start").addEventListener("click", async () => {
     const games = parseInt($("gt-games").value, 10) || 6;
@@ -1934,11 +2742,79 @@
     startGauntletPolling();
     logTerm(`Started Elo gauntlet (${games} games/level, ${gs.num_threads} threads).`, "term-ok");
   });
+  $("gt-tab-gauntlet").addEventListener("click", () => {
+    setGauntletTab("gauntlet", false);
+    syncUrl("/elo-arena");
+  });
+  $("gt-tab-calc").addEventListener("click", () => {
+    setGauntletTab("calc", false);
+    syncUrl("/elo-calculator");
+  });
+  $("calc-bot").addEventListener("change", () => {
+    $("calc-custom-wrap").classList.toggle("hidden", $("calc-bot").value !== "0");
+  });
+  $("btn-calc-start").addEventListener("click", async () => {
+    const rawBot = parseInt($("calc-bot").value, 10);
+    const isV1 = rawBot === 13;
+    const subjLevel = isV1 ? 7 : rawBot;
+    const azCkpt = isV1 ? "data/az_v1_gen4320/latest.pt" : "";
+    const customElo = parseInt($("calc-custom-elo").value, 10) || 1500;
+    const targetCi = parseInt($("calc-target-ci").value, 10) || 90;
+    const maxGames = parseInt($("calc-max-games").value, 10) || 40;
+    const threads = parseInt($("calc-threads").value, 10) || 0;
+    const gs = await api("/api/gauntlet/calc", "POST", {
+      subject_level: subjLevel,
+      az_checkpoint: azCkpt,
+      custom_elo: customElo,
+      target_ci: targetCi,
+      max_games: maxGames,
+      threads,
+    });
+    if (!gs.ok) {
+      logTerm(gs.error || "Could not start Elo Calculator.", "term-err");
+      return;
+    }
+    setGauntletTab("calc", true);
+    renderGauntletStatus(gs);
+    startGauntletPolling();
+    logTerm(`Started Precision Elo Calculator (target ±${targetCi} Elo, up to ${maxGames} games).`, "term-ok");
+  });
   $("btn-gauntlet-stop").addEventListener("click", async () => {
     const gs = await api("/api/gauntlet/stop", "POST");
     renderGauntletStatus(gs);
     logTerm("Stopping Elo gauntlet after active moves finish...", "term-warn");
   });
+
+  // Bots Play From Here modal wiring
+  function openBotsFromHereModal() {
+    if (!state) return;
+    if (state.is_game_over) {
+      logTerm("Game is already over — step back to an earlier move or load a FEN first.", "term-warn");
+      return;
+    }
+    $("bots-from-here-modal").classList.remove("hidden");
+  }
+  async function launchBotsFromHere() {
+    const wl = parseInt($("bfh-white-bot").value, 10) || 6;
+    const bl = parseInt($("bfh-black-bot").value, 10) || 9;
+    $("bots-from-here-modal").classList.add("hidden");
+    clearWatchTimer();
+    watchPaused = false;
+    $("btn-watch-toggle").textContent = "\u23F8 Pause";
+    const data = await api("/api/mode", "POST", {
+      mode: "watch",
+      white_level: wl,
+      black_level: bl,
+    });
+    if (data && data.ok) {
+      applyState(data, true);
+      logTerm("Launched Bot vs Bot battle from the current position!", "term-ok");
+    }
+  }
+  $("btn-bots-from-here").addEventListener("click", openBotsFromHereModal);
+  $("btn-toolbar-bots-here").addEventListener("click", openBotsFromHereModal);
+  $("btn-bfh-launch").addEventListener("click", launchBotsFromHere);
+  $("btn-bfh-close").addEventListener("click", () => $("bots-from-here-modal").classList.add("hidden"));
 
   $("btn-new").addEventListener("click", () => startNewGame());
   $("btn-analysis-toggle").addEventListener("click", () => {
@@ -2023,7 +2899,10 @@
   $("btn-pgn-close").addEventListener("click", () => $("pgn-modal").classList.add("hidden"));
 
   // Review modal
-  $("btn-review-close").addEventListener("click", () => $("review-modal").classList.add("hidden"));
+  $("btn-review-close").addEventListener("click", () => {
+    $("review-modal").classList.add("hidden");
+    syncUrl(underlyingBaseRoute());
+  });
   $("btn-review-pgn").addEventListener("click", () => doPgn(true));
 
   // ==========================================================================
@@ -2097,21 +2976,24 @@
     } catch (_) {}
   }
 
-  function showBoardWorkspace() {
+  function showBoardWorkspace(skipRouteSync = false) {
     currentScreen = "board";
     $("home-screen").classList.add("hidden");
     $("workspace").classList.remove("hidden");
     $("game-top-controls").classList.remove("hidden");
     $("btn-home").classList.remove("btn-toggled");
+    if (!skipRouteSync) syncUrl(underlyingBaseRoute());
   }
 
   async function showHomeMenu() {
     currentScreen = "home";
+    stopSpectateTraining(false);
     clearWatchTimer();
     $("workspace").classList.add("hidden");
     $("home-screen").classList.remove("hidden");
     $("game-top-controls").classList.add("hidden");
     $("btn-home").classList.add("btn-toggled");
+    syncUrl("/");
     await refreshHomeDashboard();
   }
 
@@ -2209,7 +3091,9 @@
   }
 
   async function startPuzzle(id) {
+    stopSpectateTraining(false);
     clearWatchTimer();
+    syncUrl("/puzzles");
     puzzleHintStage = 0;
     const data = await api("/api/puzzles/load", "POST", { id });
     if (!data || !data.ok) return;
@@ -2345,6 +3229,7 @@
 
   // ---- Game History Logic ----
   async function openHistoryModal() {
+    syncUrl("/history");
     const hData = await api("/api/history", "GET");
     if (hData && hData.ok) {
       historyCache = hData.games || [];
@@ -2585,7 +3470,10 @@
     });
 
   // History modal buttons
-  $("btn-hist-close").addEventListener("click", () => $("history-modal").classList.add("hidden"));
+  $("btn-hist-close").addEventListener("click", () => {
+    $("history-modal").classList.add("hidden");
+    syncUrl(underlyingBaseRoute());
+  });
   $("hist-search").addEventListener("input", () => renderHistoryModalTable());
   $("btn-hist-clear").addEventListener("click", async () => {
     const hData = await api("/api/history/clear", "POST");
@@ -2703,6 +3591,122 @@
   });
 
   // ==========================================================================
+  // Client-Side History API URL Router (Back / Forward / Direct URL / Refresh)
+  // ==========================================================================
+  let isPoppingRoute = false;
+
+  const ROUTE_TITLES = {
+    "/": "Chess-in-C :: Dark Studio",
+    "/play": "Play • Chess-in-C",
+    "/analysis": "Analysis • Chess-in-C",
+    "/puzzles": "Tactical Puzzles • Chess-in-C",
+    "/zero-c": "Zero-C Mission Control • Chess-in-C",
+    "/spectate": "Spectate Training • Chess-in-C",
+    "/elo-arena": "Elo Arena • Chess-in-C",
+    "/elo-calculator": "Elo Calculator • Chess-in-C",
+    "/history": "Game History • Chess-in-C",
+    "/review": "Game Review • Chess-in-C",
+  };
+
+  function underlyingBaseRoute() {
+    if (currentScreen !== "board") return "/";
+    if (spectateActive) return spectateGameId >= 0 ? `/spectate/${spectateGameId + 1}` : "/spectate";
+    if (state && state.mode === "analysis") return "/analysis";
+    if (state && state.mode === "puzzle") return "/puzzles";
+    return "/play";
+  }
+
+  function syncUrl(path, replace = false) {
+    if (isPoppingRoute) return;
+    const cleanPath = path && path.startsWith("/") ? path : "/";
+    const baseKey = cleanPath.startsWith("/spectate") ? "/spectate" : cleanPath;
+    document.title = ROUTE_TITLES[baseKey] || "Chess-in-C :: Dark Studio";
+    if (window.location.pathname === cleanPath) return;
+    try {
+      if (replace) {
+        window.history.replaceState({ path: cleanPath }, "", cleanPath);
+      } else {
+        window.history.pushState({ path: cleanPath }, "", cleanPath);
+      }
+    } catch (_) {}
+  }
+
+  function closeAllOverlayModalsSilent() {
+    if (!$("az-modal").classList.contains("hidden")) {
+      $("az-modal").classList.add("hidden");
+      stopAzPolling();
+    }
+    if (!$("gauntlet-modal").classList.contains("hidden")) {
+      $("gauntlet-modal").classList.add("hidden");
+      stopGauntletPolling();
+    }
+    if ($("history-modal")) $("history-modal").classList.add("hidden");
+    if ($("review-modal")) $("review-modal").classList.add("hidden");
+    if ($("puzzle-modal")) $("puzzle-modal").classList.add("hidden");
+    if ($("bots-here-modal")) $("bots-here-modal").classList.add("hidden");
+  }
+
+  async function applyRouteFromUrl(rawPath, isBoot = false) {
+    const path = (rawPath || "/").replace(/\/+$/, "") || "/";
+    const prevPop = isPoppingRoute;
+    isPoppingRoute = true;
+    try {
+      closeAllOverlayModalsSilent();
+      if (path === "/" || path === "/index.html") {
+        await showHomeMenu();
+      } else if (path === "/zero-c") {
+        if (isBoot) await showHomeMenu();
+        await openAzModal();
+      } else if (path === "/spectate" || path.startsWith("/spectate/")) {
+        const seg = path.split("/")[2];
+        const gid = seg && /^\d+$/.test(seg) ? Math.max(0, parseInt(seg, 10) - 1) : -1;
+        await startSpectateTraining(gid);
+      } else if (path === "/elo-arena") {
+        if (isBoot) await showHomeMenu();
+        setGauntletTab("gauntlet", false);
+        await openGauntletModal();
+      } else if (path === "/elo-calculator") {
+        if (isBoot) await showHomeMenu();
+        setGauntletTab("calc", false);
+        await openGauntletModal();
+      } else if (path === "/history") {
+        if (isBoot) await showHomeMenu();
+        await openHistoryModal();
+      } else if (path === "/review") {
+        showBoardWorkspace();
+        if (state && state.total_plies > 0) {
+          await openReviewModal();
+        }
+      } else if (path === "/analysis") {
+        stopSpectateTraining(false);
+        showBoardWorkspace();
+        if (!state || state.mode !== "analysis") {
+          await enterAnalysisMode();
+        }
+      } else if (path === "/puzzles") {
+        stopSpectateTraining(false);
+        showBoardWorkspace();
+        if (!state || state.mode !== "puzzle") {
+          await startPuzzle(1);
+        }
+      } else if (path === "/play") {
+        stopSpectateTraining(true);
+        showBoardWorkspace();
+      } else {
+        await showHomeMenu();
+      }
+      const baseKey = path.startsWith("/spectate") ? "/spectate" : path;
+      document.title = ROUTE_TITLES[baseKey] || "Chess-in-C :: Dark Studio";
+    } finally {
+      isPoppingRoute = prevPop;
+    }
+  }
+
+  window.addEventListener("popstate", () => {
+    applyRouteFromUrl(window.location.pathname, false);
+  });
+
+  // ==========================================================================
   // Boot
   // ==========================================================================
   async function boot() {
@@ -2722,7 +3726,11 @@
     } else {
       logTerm("Stockfish not found (install with 'sudo apt install stockfish' to unlock levels 7-11).", "term-dim");
     }
-    await showHomeMenu();
+    const initPath = window.location.pathname || "/";
+    await applyRouteFromUrl(initPath, true);
+    try {
+      window.history.replaceState({ path: initPath }, "", initPath);
+    } catch (_) {}
   }
 
   boot();

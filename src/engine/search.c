@@ -227,7 +227,10 @@ engine *engine_create(size_t tt_mb) {
     }
     eng->main_worker->eng = eng;
     eng->main_worker->thread_id = 0;
-    eng->rng_state = (u64) time(NULL) ^ (u64) (uintptr_t) eng ^ 0x9e3779b97f4a7c15ull;
+    struct timespec rng_ts;
+    clock_gettime(CLOCK_MONOTONIC, &rng_ts);
+    eng->rng_state = ((u64) time(NULL) << 32) ^ (u64) rng_ts.tv_nsec ^ (u64) (uintptr_t) eng
+                     ^ 0x9e3779b97f4a7c15ull;
     eng->num_threads = 1;
     eng->use_book = true;
     eng->limit_strength = false;
@@ -2140,7 +2143,7 @@ search_result engine_search_level(engine *eng, const full_chess *game, int level
         return res;
     }
 
-    if (eng->use_book && level >= 4 && count > 1) {
+    if (eng->use_book && level >= 2 && count > 1) {
         const char *bpath = eng->book_path[0] ? eng->book_path : NULL;
         u64 bmove = book_probe(game, bpath, &eng->rng_state);
         if (bmove != NULL_MOVE) {
@@ -2154,6 +2157,34 @@ search_result engine_search_level(engine *eng, const full_chess *game, int level
             res.score_cp = -eval_board(eng->main_worker, &next);
             res.elapsed_sec = 0.001;
             return res;
+        }
+        // Out-of-book opening variety (first 8 plies): randomly pick among top moves within 18 cp
+        // so bot-vs-bot games don't repeat identically even from custom FENs or sidelines.
+        if (game->move_count < 8 && level >= 3) {
+            multipv_line lines[3];
+            u64 tot_n = 0;
+            double el = 0.0;
+            int got = engine_search_multipv(
+                eng, game, p->max_depth, p->time_ms, 3, lines, &tot_n, &el);
+            if (got > 0) {
+                int best_sc = lines[0].score_cp;
+                int viable = 1;
+                while (viable < got && (best_sc - lines[viable].score_cp) <= 18
+                       && lines[viable].score_cp > -MATE_BOUND) {
+                    viable++;
+                }
+                int pick = (viable > 1)
+                               ? (int) (engine_splitmix64(&eng->rng_state) % (u64) viable)
+                               : 0;
+                search_result res;
+                memset(&res, 0, sizeof(res));
+                res.best_move = lines[pick].best_move;
+                res.score_cp = lines[pick].score_cp;
+                res.depth_reached = lines[pick].depth_reached;
+                res.nodes = tot_n;
+                res.elapsed_sec = el;
+                return res;
+            }
         }
     }
 
@@ -2174,8 +2205,8 @@ search_result engine_search_elo(engine *eng, const full_chess *game, int target_
         return empty;
     }
 
-    // Use opening book naturally from 1800+ Elo onward
-    if (eng->use_book && target_elo >= 1800 && count > 1) {
+    // Use opening book naturally from 1100+ Elo onward for varied openings
+    if (eng->use_book && target_elo >= 1100 && count > 1) {
         const char *bpath = eng->book_path[0] ? eng->book_path : NULL;
         u64 bmove = book_probe(game, bpath, &eng->rng_state);
         if (bmove != NULL_MOVE) {

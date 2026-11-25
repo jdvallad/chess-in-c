@@ -308,6 +308,37 @@
         </div>
       </div>
 
+      <!-- Live Self-Play Spectate HUD (visible in Spectate Training Mode) -->
+      <div class="spectate-hud hidden" id="spectate-hud">
+        <div class="spectate-row spectate-top">
+          <div class="spectate-title-grp">
+            <span class="sp-live-dot"></span>
+            <strong id="sp-game-title">Spectating Self-Play Game #1</strong>
+            <span class="az-cap-tag full" id="sp-cap-tag">FULL 0/300</span>
+            <span class="az-phase-badge az-ph-play" id="sp-phase">SELF-PLAY</span>
+          </div>
+          <div class="spectate-actions">
+            <button id="btn-sp-next" class="btn btn-sm" title="Jump to another active self-play game">&#9197; Next Game</button>
+            <button id="btn-sp-analyze" class="btn btn-sm btn-accent" title="Pause spectating and inspect this exact position in Analysis Mode">&#128269; Pause &amp; Analyze</button>
+            <button id="btn-sp-lab" class="btn btn-sm btn-magenta" title="Return to Zero-C Mission Control dashboard">&#128202; Training Lab</button>
+            <button id="btn-sp-exit" class="btn btn-sm" title="Exit Spectate Mode">&#10005; Exit</button>
+          </div>
+        </div>
+        <div class="spectate-metrics">
+          <span>Gen: <strong id="sp-gen">0</strong></span>
+          <span>Games: <strong id="sp-games">0</strong></span>
+          <span>Policy Acc: <strong id="sp-acc">&mdash;</strong></span>
+          <span>Loss: <strong id="sp-loss">&mdash;</strong></span>
+          <span>GPU: <strong id="sp-gpu">&mdash;</strong></span>
+          <span>WDL: <strong id="sp-wdl-text">&mdash;</strong></span>
+          <span>ML: <strong id="sp-ml-text">&mdash;</strong></span>
+        </div>
+        <div class="spectate-bottom">
+          <div class="az-top-moves" id="sp-top-moves"></div>
+          <span class="sp-toast hidden" id="sp-toast"></span>
+        </div>
+      </div>
+
       <!-- Puzzle HUD Panel (visible in puzzle mode) -->
       <div class="puzzle-bar hidden" id="puzzle-bar">
         <div class="puzzle-top">
@@ -352,6 +383,7 @@
             Stockfish
           </label>
           <button id="btn-play-from-here" class="btn btn-sm btn-primary" title="Resume playing vs Engine from this position">Play From Here</button>
+          <button id="btn-bots-from-here" class="btn btn-sm btn-accent" title="Let two bots battle from this exact position">&#129302; Bots Play From Here</button>
         </div>
         <div class="analysis-pv" id="analysis-pv">
           <span class="pv-badge" id="pv-eval">0.0</span>
@@ -370,6 +402,7 @@
         <button id="btn-eval-toggle" class="btn btn-toggled" title="Show/Hide Eval Bar (eval)">&#9646; Eval</button>
         <button id="btn-review" class="btn btn-accent" title="Post-Game Review with Est. Elo (review)">&#9733; Review</button>
         <button id="btn-save-game" class="btn" title="Save Current Game to History">&#128190; Save</button>
+        <button id="btn-toolbar-bots-here" class="btn" title="Watch two bots play from this exact position">&#129302; Bots Here</button>
         <button id="btn-pgn" class="btn" title="Show / Copy PGN (pgn)">PGN</button>
         <button id="btn-fen" class="btn" title="View / Load FEN (fen)">FEN</button>
       </div>
@@ -469,23 +502,30 @@
     </div>
   </div>
 
-  <!-- Live Elo Gauntlet Studio Modal -->
+  <!-- Live Elo Arena & Precision Elo Calculator Modal -->
   <div class="modal-backdrop hidden" id="gauntlet-modal">
     <div class="modal gauntlet-box">
       <div class="review-header">
         <div>
-          <h2>&#127942; Live Elo Calibration Gauntlet</h2>
-          <p class="review-sub" id="gauntlet-sub">Multithreaded benchmark • Saves automatically to elo_ratings.json</p>
+          <h2>&#127942; Elo Arena &amp; Precision Elo Calculator</h2>
+          <p class="review-sub" id="gauntlet-sub">Multithreaded calibration for Titan-C &amp; Zero-C • Adaptive Stockfish 95% CI calculator</p>
         </div>
         <div class="review-header-actions">
           <button id="btn-gauntlet-start" class="btn btn-primary">&#9654; Start Gauntlet</button>
-          <button id="btn-gauntlet-stop" class="btn hidden">&#9209; Stop</button>
+          <button id="btn-calc-start" class="btn btn-primary hidden">&#127919; Calculate Elo</button>
+          <button id="btn-gauntlet-stop" class="btn btn-danger hidden">&#9209; Stop</button>
           <button id="btn-gauntlet-close" class="btn">Close</button>
         </div>
       </div>
 
-      <div class="gauntlet-controls">
-        <label>Games / level:
+      <div class="gt-tabs">
+        <button type="button" class="gt-tab active" id="gt-tab-gauntlet">&#127942; Full Elo Gauntlet</button>
+        <button type="button" class="gt-tab" id="gt-tab-calc">&#127919; Single-Bot Elo Calculator (95% CI)</button>
+      </div>
+
+      <!-- Tab 1: Full Calibration Gauntlet Controls -->
+      <div class="gauntlet-controls" id="gt-controls-gauntlet">
+        <label>Games / bot:
           <select id="gt-games">
             <option value="2">2 (Quick)</option>
             <option value="4">4</option>
@@ -499,13 +539,14 @@
         </label>
         <label>Scope:
           <select id="gt-scope">
-            <option value="0" selected>All Levels (1–6)</option>
-            <option value="1">Level 1 — Novice</option>
-            <option value="2">Level 2 — Casual</option>
-            <option value="3">Level 3 — Club</option>
-            <option value="4">Level 4 — Strong</option>
-            <option value="5">Level 5 — Master</option>
-            <option value="6">Level 6 — Grandmaster</option>
+            <option value="0" selected>All Bots (Titan-C 1–6 + Zero-C)</option>
+            <option value="1">Titan-C L1 — Novice</option>
+            <option value="2">Titan-C L2 — Casual</option>
+            <option value="3">Titan-C L3 — Club</option>
+            <option value="4">Titan-C L4 — Strong</option>
+            <option value="5">Titan-C L5 — Master</option>
+            <option value="6">Titan-C L6 — Grandmaster</option>
+            <option value="7">Zero-C (AlphaZero)</option>
           </select>
         </label>
         <label>Opponent:
@@ -513,6 +554,45 @@
             <option value="sf">Stockfish (FIDE Elo)</option>
             <option value="internal">Internal Ladder</option>
           </select>
+        </label>
+      </div>
+
+      <!-- Tab 2: Precision Single-Bot Elo Calculator Controls -->
+      <div class="gauntlet-controls hidden" id="gt-controls-calc">
+        <label>Bot to Rate:
+          <select id="calc-bot">
+            <option value="7" selected>Zero-C v2 (AlphaZero — Latest)</option>
+            <option value="13">&#127963; Zero-C v1 Champion (Gen 4320 &bull; 6&times;96 Max)</option>
+            <option value="1">Titan-C L1 — Novice</option>
+            <option value="2">Titan-C L2 — Casual</option>
+            <option value="3">Titan-C L3 — Club</option>
+            <option value="4">Titan-C L4 — Strong</option>
+            <option value="5">Titan-C L5 — Master</option>
+            <option value="6">Titan-C L6 — Grandmaster</option>
+            <option value="0">Titan-C Custom Elo</option>
+          </select>
+        </label>
+        <label id="calc-custom-wrap" class="hidden">Custom Elo:
+          <input type="number" id="calc-custom-elo" class="text-field" min="800" max="2600" step="50" value="1500" style="width:82px;padding:4px 7px;">
+        </label>
+        <label>Target 95% CI:
+          <select id="calc-target-ci">
+            <option value="120">&plusmn;120 Elo (~24g)</option>
+            <option value="90" selected>&plusmn;90 Elo (~44g)</option>
+            <option value="75">&plusmn;75 Elo (~64g)</option>
+            <option value="60">&plusmn;60 Elo (~100g)</option>
+          </select>
+        </label>
+        <label>Max Games:
+          <select id="calc-max-games">
+            <option value="20">20</option>
+            <option value="40" selected>40</option>
+            <option value="60">60</option>
+            <option value="100">100</option>
+          </select>
+        </label>
+        <label>Threads:
+          <select id="calc-threads"></select>
         </label>
       </div>
 
@@ -524,17 +604,65 @@
       </div>
 
       <div id="gauntlet-body" class="gauntlet-body">
-        <table class="review-table">
-          <thead>
-            <tr><th>Level</th><th>Opponent</th><th>Status</th><th>W-D-L</th><th>Score</th><th>Saved / Live Elo</th></tr>
-          </thead>
-          <tbody id="gt-table-body"></tbody>
-        </table>
+        <!-- Full Gauntlet Table -->
+        <div id="gt-view-gauntlet">
+          <table class="review-table">
+            <thead>
+              <tr><th>Bot / Level</th><th>Opponent</th><th>Status</th><th>W-D-L</th><th>Score</th><th>Saved / Live Elo</th></tr>
+            </thead>
+            <tbody id="gt-table-body"></tbody>
+          </table>
+        </div>
+
+        <!-- Precision Elo Calculator Live Dashboard -->
+        <div id="gt-view-calc" class="hidden">
+          <div class="calc-hero-card" id="calc-hero-card">
+            <div class="calc-hero-main">
+              <span class="calc-hero-lbl" id="calc-hero-bot">Select a bot and click Calculate Elo</span>
+              <div class="calc-hero-elo" id="calc-hero-elo">&mdash;</div>
+              <div class="calc-hero-ci" id="calc-hero-ci">Adaptive Stockfish MLE bracketing with 95% confidence interval</div>
+            </div>
+            <div class="calc-hero-stats">
+              <div class="calc-stat"><span>Games</span><strong id="calc-st-games">0 / 40</strong></div>
+              <div class="calc-stat"><span>W / D / L</span><strong id="calc-st-wdl">0 / 0 / 0</strong></div>
+              <div class="calc-stat"><span>SF Anchor</span><strong id="calc-st-anchor">&mdash;</strong></div>
+              <div class="calc-stat"><span>Status</span><strong id="calc-st-status">Ready</strong></div>
+            </div>
+          </div>
+          <table class="review-table" style="margin-top:10px;">
+            <thead>
+              <tr><th>Stockfish Anchor</th><th>W-D-L</th><th>Score</th><th>Games</th></tr>
+            </thead>
+            <tbody id="calc-buckets-body">
+              <tr><td colspan="4" class="empty-hint">Adaptive anchor results will appear here as games complete.</td></tr>
+            </tbody>
+          </table>
+        </div>
 
         <div id="gt-workers-section" class="hidden">
           <h4 class="gt-section-title">Live Parallel Games (click any board to inspect in Analysis)</h4>
           <div id="gt-workers-grid" class="workers-grid"></div>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bots Play From Here Modal -->
+  <div class="modal-backdrop hidden" id="bots-from-here-modal">
+    <div class="modal fen-box">
+      <h3>&#129302; Bots Play From Here</h3>
+      <p class="review-sub" style="margin-bottom:12px;">Watch two bots battle live starting from the exact current board position.</p>
+      <div class="bfh-form">
+        <label class="field-label">White Bot:
+          <select id="bfh-white-bot" class="text-field"></select>
+        </label>
+        <label class="field-label">Black Bot:
+          <select id="bfh-black-bot" class="text-field"></select>
+        </label>
+      </div>
+      <div class="modal-actions">
+        <button id="btn-bfh-launch" class="btn btn-primary">&#9654; Launch Bot Battle</button>
+        <button id="btn-bfh-close" class="btn">Cancel</button>
       </div>
     </div>
   </div>
@@ -587,14 +715,15 @@
     <div class="modal az-modal-box">
       <div class="review-header">
         <div>
-          <h2>&#129504; Zero-C &mdash; AlphaZero Self-Play Studio</h2>
-          <p class="review-sub" id="az-sub">Pure rules-only tabula rasa MCTS + SE-ResNet (KataGo Playout Caps, WDL + Moves-Left, FP16 Tensor Cores)</p>
+          <h2>&#129504; Zero-C v2 &mdash; AlphaZero Self-Play Mission Control</h2>
+          <p class="review-sub" id="az-sub">Pure rules-only tabula rasa MCTS + SE-ResNet (20-Plane Rep/STM, Exact Solver, Subtree Reuse, Q-Blended WDL, 1.2M Replay)</p>
         </div>
         <div class="review-header-actions">
           <span class="az-phase-badge" id="az-phase-badge">IDLE</span>
+          <button id="btn-az-spectate" class="btn btn-sm btn-accent" title="Watch live self-play games on the full board with auto-advance and training HUD">&#128065; Spectate Training</button>
+          <button id="btn-az-vs-v1" class="btn btn-sm btn-magenta" title="Watch live Zero-C v2 play head-to-head against immortalized Zero-C v1 Champion (Gen 4320)">&#9876; Watch v2 vs v1</button>
           <button id="btn-az-start" class="btn btn-primary">&#9654; Start Training</button>
           <button id="btn-az-stop" class="btn btn-danger hidden">&#9632; Stop Training</button>
-          <button id="btn-az-reset" class="btn btn-danger-ghost" title="Reset checkpoints &amp; start fresh from Gen 0">Reset Run</button>
           <button id="btn-az-close" class="btn">Close</button>
         </div>
       </div>
@@ -603,8 +732,10 @@
         <label>Network:
           <select id="az-arch">
             <option value="tiny">Tiny 4&times;64 (~380k)</option>
-            <option value="standard" selected>Standard 6&times;96 (~1.45M)</option>
-            <option value="strong">Strong 8&times;128 (~2.5M)</option>
+            <option value="standard">Standard 6&times;96 (~1.45M)</option>
+            <option value="strong">Strong 8&times;128 (~2.6M)</option>
+            <option value="pro" selected>Pro 10&times;128 (~3.2M &bull; 2000-Elo Target)</option>
+            <option value="master">Master 12&times;160 (~5.8M)</option>
           </select>
         </label>
         <label>Parallel Games:
@@ -618,8 +749,9 @@
         <label>Playout Cap (Fast/Full):
           <select id="az-playouts">
             <option value="24,120">Fast (24 / 120)</option>
-            <option value="36,200" selected>Balanced (36 / 200)</option>
-            <option value="48,300">Deep (48 / 300)</option>
+            <option value="36,200">Balanced (36 / 200)</option>
+            <option value="48,300" selected>Deep (48 / 300 &bull; v2 Recommended)</option>
+            <option value="48,400">Ultra (48 / 400)</option>
           </select>
         </label>
         <label>Games / Gen:
@@ -633,6 +765,11 @@
         <span class="az-hw-chip" id="az-hw-chip">GPU: Ready</span>
       </div>
 
+      <div class="az-session-strip hidden" id="az-session-strip">
+        <span class="az-sess-dot"></span>
+        <span id="az-session-text">Active Session: Pro 10&times;128 &bull; 256 games &bull; 48/300 playout cap &bull; 128 games/gen</span>
+      </div>
+
       <div class="gauntlet-progress-wrap">
         <div class="gauntlet-progress-bar">
           <div class="gauntlet-progress-fill az-progress-fill" id="az-progress-fill"></div>
@@ -641,28 +778,163 @@
       </div>
 
       <div class="az-body">
-        <div class="az-metrics-grid">
-          <div class="az-metric"><span class="az-m-lbl">Generation</span><strong id="az-m-gen">Gen 0</strong><small id="az-m-arch">6&times;96 SE-ResNet</small></div>
-          <div class="az-metric"><span class="az-m-lbl">Self-Play Games</span><strong id="az-m-games">0</strong><small id="az-m-gph">0 games/hr</small></div>
-          <div class="az-metric"><span class="az-m-lbl">Positions Learned</span><strong id="az-m-pos">0</strong><small id="az-m-replay">Replay: 0</small></div>
-          <div class="az-metric"><span class="az-m-lbl">GPU Throughput</span><strong id="az-m-eps">0 /s</strong><small id="az-m-vram">FP16 &bull; 0 MB</small></div>
-          <div class="az-metric"><span class="az-m-lbl">Policy Top-1 Acc</span><strong id="az-m-acc">&mdash;</strong><small id="az-m-loss">Loss: &mdash;</small></div>
-          <div class="az-metric"><span class="az-m-lbl">W / D / L Split</span><strong id="az-m-wdl">0 / 0 / 0</strong><small id="az-m-dec">Decisive: &mdash;</small></div>
+        <!-- Tangible Chess Mastery Milestone Bar + Live Health Diagnosis -->
+        <div class="az-milestone-panel">
+          <div class="az-milestone-head">
+            <span class="az-milestone-title">&#127919; Mastery Roadmap (Pure Self-Play &rarr; 2000 Elo)</span>
+            <span class="az-health-pill" id="az-health-pill">Ready to launch Zero-C v2</span>
+          </div>
+          <div class="az-milestones-track" id="az-milestones-track">
+            <div class="az-ms-step" data-ms="0"><span class="az-ms-dot"></span><b>1. Rules &amp; Captures</b><small>~2k games</small></div>
+            <div class="az-ms-step" data-ms="1"><span class="az-ms-dot"></span><b>2. Openings</b><small>~15k games</small></div>
+            <div class="az-ms-step" data-ms="2"><span class="az-ms-dot"></span><b>3. Tactical Eye</b><small>~60k games</small></div>
+            <div class="az-ms-step" data-ms="3"><span class="az-ms-dot"></span><b>4. Endgames</b><small>~150k games</small></div>
+            <div class="az-ms-step" data-ms="4"><span class="az-ms-dot"></span><b>5. Beat v1 (4320)</b><small>~300k games</small></div>
+            <div class="az-ms-step" data-ms="5"><span class="az-ms-dot"></span><b>6. 2000-Elo Target</b><small>10&times;128 + Hybrid</small></div>
+          </div>
         </div>
 
-        <div class="az-charts-row">
-          <div class="az-chart-card">
-            <div class="az-chart-head"><strong>Training Loss Curves</strong><span class="az-legend"><i class="lg-tot"></i>Total <i class="lg-pol"></i>Policy <i class="lg-wdl"></i>WDL</span></div>
-            <div id="az-loss-chart" class="az-chart-box"><div class="empty-hint">Loss curves appear after Gen 1 completes.</div></div>
+        <!-- 8 Annotated Telemetry Cards -->
+        <div class="az-metrics-grid">
+          <div class="az-metric" title="Each Generation = 1 batch of self-play games followed by 1 FP16 neural training epoch.">
+            <span class="az-m-lbl">Generation <i class="az-q">?</i></span>
+            <strong id="az-m-gen">Gen 0</strong>
+            <small id="az-m-arch">10&times;128 SE-ResNet</small>
+            <span class="az-m-hint">Training cycle &amp; net size</span>
           </div>
+          <div class="az-metric" title="Total complete chess games played from scratch by Zero-C against itself with zero outside data.">
+            <span class="az-m-lbl">Self-Play Games <i class="az-q">?</i></span>
+            <strong id="az-m-games">0</strong>
+            <small id="az-m-gph">0 games/hr</small>
+            <span class="az-m-hint">Pure rules-only experience</span>
+          </div>
+          <div class="az-metric" title="Sliding window of recent game positions kept in RAM for training. A 1.2M window prevents forgetting openings and endgames.">
+            <span class="az-m-lbl">Replay Memory <i class="az-q">?</i></span>
+            <strong id="az-m-pos">0</strong>
+            <small id="az-m-replay">Buffer: 0 / 1.2M (0%)</small>
+            <div class="az-mini-bar"><div id="az-replay-fill" style="width:0%"></div></div>
+          </div>
+          <div class="az-metric" title="Neural network board evaluations per second on FP16 Tensor Cores across concurrent C MCTS trees.">
+            <span class="az-m-lbl">GPU Throughput <i class="az-q">?</i></span>
+            <strong id="az-m-eps">0 /s</strong>
+            <small id="az-m-vram">FP16 &bull; 0 MB</small>
+            <span class="az-m-hint">Tensor Core leaf eval speed</span>
+          </div>
+          <div class="az-metric" title="How often the raw neural network's #1 move (0 sims) matches the full 300-sim MCTS search choice. Higher = stronger instant intuition.">
+            <span class="az-m-lbl">Policy Top-1 Acc <i class="az-q">?</i></span>
+            <strong id="az-m-acc">&mdash;</strong>
+            <small id="az-m-acc-delta">Trend: &mdash;</small>
+            <span class="az-m-hint">Raw 0-sim move intuition</span>
+          </div>
+          <div class="az-metric" title="Combined training loss: Policy cross-entropy + 1.5x WDL value cross-entropy + 0.15x Moves-Left Huber loss.">
+            <span class="az-m-lbl">Loss Breakdown <i class="az-q">?</i></span>
+            <strong id="az-m-loss-big">&mdash;</strong>
+            <small id="az-m-loss">Pol: &mdash; &bull; WDL: &mdash;</small>
+            <span class="az-m-hint">Lower Policy &amp; ML = sharper</span>
+          </div>
+          <div class="az-metric" title="Live AdamW optimizer learning rate on the Cosine schedule (warms up over 12 gens, decays smoothly to an 8% floor — never hits 0).">
+            <span class="az-m-lbl">Learning Rate <i class="az-q">?</i></span>
+            <strong id="az-m-lr">&mdash;</strong>
+            <small id="az-m-lr-sub">Cosine schedule</small>
+            <span class="az-m-hint">Active optimizer step size</span>
+          </div>
+          <div class="az-metric" title="Cumulative White wins / Draws / Black wins. Mature chess engines naturally settle around White 51–53% of decisive games.">
+            <span class="az-m-lbl">Game Balance <i class="az-q">?</i></span>
+            <strong id="az-m-wdl">0 / 0 / 0</strong>
+            <small id="az-m-dec">Decisive: &mdash; &bull; Avg: &mdash;</small>
+            <span class="az-m-hint">White / Draw / Black split</span>
+          </div>
+        </div>
+
+        <!-- Chart Controls Toolbar -->
+        <div class="az-chart-toolbar">
+          <div class="az-seg-group" id="az-window-group">
+            <span class="az-tb-lbl">Window:</span>
+            <button class="az-seg-btn active" data-win="0">Full Run</button>
+            <button class="az-seg-btn" data-win="250">Last 250</button>
+            <button class="az-seg-btn" data-win="60">Last 60</button>
+          </div>
+          <div class="az-seg-group">
+            <label class="az-chk-lbl"><input type="checkbox" id="az-chk-ema" checked /> Smooth Trendline</label>
+          </div>
+          <button id="btn-az-guide-toggle" class="btn btn-sm" style="margin-left:auto;">&#128214; Field Guide: What Do These Mean?</button>
+        </div>
+
+        <!-- Collapsible Training Field Guide -->
+        <div class="az-guide-card hidden" id="az-guide-card">
+          <div class="az-guide-grid">
+            <div class="az-guide-item">
+              <h4>&#129504; Why can Total Loss look flat while the bot gets stronger?</h4>
+              <p>Self-play is a <strong>moving target</strong>: as both White and Black get stronger, games stay balanced longer, so <strong>WDL Loss</strong> naturally settles around <code>0.55–0.68</code> instead of falling to 0. Always look at <strong>Policy Loss falling</strong>, <strong>Policy Top-1 Acc rising</strong>, and <strong>head-to-head Elo</strong> vs. earlier gens or Zero-C v1!</p>
+            </div>
+            <div class="az-guide-item">
+              <h4>&#127919; Policy Accuracy &amp; Playout Caps</h4>
+              <p>On 25% of moves Zero-C runs a <strong>Full Search</strong> (300–400 sims) to discover deep tactics, and trains its neural Policy head to predict that search result instantly. When Policy Acc climbs from <code>10% &rarr; 45% &rarr; 60%+</code>, Zero-C starts seeing strong candidate moves in 0 sims.</p>
+            </div>
+            <div class="az-guide-item">
+              <h4>&#9878; WDL Value &amp; Moves-Left (Endgame Killer)</h4>
+              <p>Instead of a single score, Zero-C predicts exact <strong>Win / Draw / Loss probabilities</strong> plus <strong>Moves-Left</strong> (plies until game end). In winning endgames where every good move looks like +95% Win, the Moves-Left head breaks ties so Zero-C forces the fastest checkmate instead of shuffling.</p>
+            </div>
+            <div class="az-guide-item">
+              <h4>&#128640; What's new in Zero-C v2 (Path A + Path C)?</h4>
+              <p><strong>Training (Pure Tabula Rasa):</strong> <code>10&times;128</code> SE-ResNet (3.56M), 20-plane repetition+STM input, <strong>1.2M replay buffer</strong>, MCTS subtree reuse, Exact Mate Solver, Q-blended WDL, and smart resignation.<br><strong>Play Mode (Path C Hybrid):</strong> 600+ FP16 sims + subtree reuse + zero-bias capture quiescence delta so it never hangs pieces while keeping its pure neural style.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- 4 Dynamically Auto-Scaled Interactive Charts (2x2) + Explainer Cards -->
+        <div class="az-charts-row az-charts-2x2">
           <div class="az-chart-card">
-            <div class="az-chart-head"><strong>Learning Signal (%)</strong><span class="az-legend"><i class="lg-acc"></i>Policy Acc <i class="lg-dec"></i>Decisive %</span></div>
-            <div id="az-acc-chart" class="az-chart-box"><div class="empty-hint">Accuracy &amp; decisive curves appear after Gen 1 completes.</div></div>
+            <div class="az-chart-head">
+              <strong>&#127919; Policy Learning (Intuition)</strong>
+              <span class="az-legend"><i class="lg-pol"></i>Policy Loss (L) <i class="lg-acc"></i>Top-1 Acc % (R)</span>
+            </div>
+            <div id="az-policy-chart" class="az-chart-box"><div class="empty-hint">Policy curves appear after Gen 1 completes.</div></div>
+            <div class="az-chart-explain">
+              <b>What this shows:</b> How closely raw neural move intuition (0 sims) matches deep MCTS search.
+              <span class="az-good-sig">Healthy: Blue falling &darr;, Purple climbing &uarr;.</span>
+            </div>
+          </div>
+
+          <div class="az-chart-card">
+            <div class="az-chart-head">
+              <strong>&#9878; Value &amp; Endgame Precision</strong>
+              <span class="az-legend"><i class="lg-wdl"></i>WDL Loss (L) <i class="lg-ml"></i>Moves-Left Loss (R)</span>
+            </div>
+            <div id="az-value-chart" class="az-chart-box"><div class="empty-hint">Value &amp; Moves-Left curves appear after Gen 1 completes.</div></div>
+            <div class="az-chart-explain">
+              <b>What this shows:</b> Outcome prediction error (WDL) and endgame countdown accuracy (Moves-Left).
+              <span class="az-good-sig">Healthy: Steady WDL (~0.5–0.7), Cyan ML falling &darr;.</span>
+            </div>
+          </div>
+
+          <div class="az-chart-card">
+            <div class="az-chart-head">
+              <strong>&#9876; Game Sharpness &amp; Depth</strong>
+              <span class="az-legend"><i class="lg-dec"></i>Decisive % (L) <i class="lg-ply"></i>Avg Plies (R)</span>
+            </div>
+            <div id="az-dynamics-chart" class="az-chart-box"><div class="empty-hint">Game dynamics appear after Gen 1 completes.</div></div>
+            <div class="az-chart-explain">
+              <b>What this shows:</b> Share of games ending in a win/loss (not draw) and average game length in half-moves.
+              <span class="az-good-sig">Healthy: 65–80% decisive, 90–140 ply strategic fights.</span>
+            </div>
+          </div>
+
+          <div class="az-chart-card">
+            <div class="az-chart-head">
+              <strong>&#9812; Color Parity &amp; Cosine LR</strong>
+              <span class="az-legend"><i class="lg-wht"></i>White % <i class="lg-blk"></i>Black % <i class="lg-tot"></i>LR (R)</span>
+            </div>
+            <div id="az-balance-chart" class="az-chart-box"><div class="empty-hint">Color balance &amp; LR schedule appear after Gen 1 completes.</div></div>
+            <div class="az-chart-explain">
+              <b>What this shows:</b> White vs. Black win rates per gen plus the live AdamW learning rate.
+              <span class="az-good-sig">Healthy: White slightly edges Black; Pink LR stays above floor.</span>
+            </div>
           </div>
         </div>
 
         <div id="az-live-section">
-          <h4 class="gt-section-title">Live Concurrent Self-Play Games (click any board to inspect in Analysis)</h4>
+          <h4 class="gt-section-title">Live Concurrent Self-Play Games (click any board to open Live Spectate Mode)</h4>
           <div id="az-live-grid" class="workers-grid">
             <div class="empty-hint">Start training to watch live concurrent self-play games, WDL bars &amp; MCTS visit candidates stream in real time.</div>
           </div>

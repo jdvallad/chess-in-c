@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L
 #include "az/az_mcts.h"
 
 #include "core/attacks.h"
@@ -13,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 // =========================================================================
@@ -75,7 +77,7 @@ void az_global_init(void) {
 }
 
 // =========================================================================
-// Canonical 18-Plane Encoding & Exact AlphaZero 4,672-Action Mapping
+// Canonical 20-Plane Encoding & Exact AlphaZero 4,672-Action Mapping
 // =========================================================================
 
 // Queen slide directions: N, NE, E, SE, S, SW, W, NW
@@ -141,7 +143,8 @@ static inline void fill_const_plane(float *plane, float val) {
     }
 }
 
-void az_encode_board(const chess *b, int half_move, float out_planes[AZ_BOARD_FLOATS]) {
+void az_encode_board_ctx(
+    const chess *b, int half_move, int is_rep, float out_planes[AZ_BOARD_FLOATS]) {
     memset(out_planes, 0, sizeof(float) * AZ_BOARD_FLOATS);
 
     u64 f = b->friendly_pieces;
@@ -192,6 +195,19 @@ void az_encode_board(const chess *b, int half_move, float out_planes[AZ_BOARD_FL
         hm_norm = 0.0f;
     }
     fill_const_plane(out_planes + 17 * 64, hm_norm);
+
+    // Plane 18: repetition flag (position already seen in game history -> 3-fold risk!)
+    if (is_rep) {
+        fill_const_plane(out_planes + 18 * 64, 1.0f);
+    }
+    // Plane 19: side-to-move color (1.0 = White, 0.0 = Black)
+    if (!is_flipped(b)) {
+        fill_const_plane(out_planes + 19 * 64, 1.0f);
+    }
+}
+
+void az_encode_board(const chess *b, int half_move, float out_planes[AZ_BOARD_FLOATS]) {
+    az_encode_board_ctx(b, half_move, 0, out_planes);
 }
 
 int az_legal_actions(
@@ -230,6 +246,278 @@ void az_move_to_uci(const chess *b, u64 m, char out[8]) {
 }
 
 // =========================================================================
+// Pure-Rules Mate-in-1 / Mate-in-2 Probe + Path-C Tactical Quiescence Delta
+// =========================================================================
+
+static inline bool az_is_in_check(const chess *b) {
+    u64 fk = b->kings & b->friendly_pieces;
+    if (!fk) {
+        return false;
+    }
+    return attacked_offset(b, __builtin_ctzll(fk));
+}
+
+static bool az_has_mate_in_1(const chess *b, u64 *out_mate_mv) {
+    chess tmp = *b;
+    u64 moves[MAX_LEGAL_MOVES];
+    int n = set_legal_moves(&tmp, moves);
+    for (int i = 0; i < n; i++) {
+        chess nxt = *b;
+        chess_make_move(&nxt, moves[i]);
+        if (!az_is_in_check(&nxt)) {
+            continue;
+        }
+        u64 rep[MAX_LEGAL_MOVES];
+        if (set_legal_moves(&nxt, rep) == 0) {
+            if (out_mate_mv) {
+                *out_mate_mv = moves[i];
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+// Pure rules-only forced Mate-in-2 check after candidate move `m1` produced `after_m1`.
+// Checks that `after_m1` is in check and EVERY opponent reply allows immediate Mate-in-1.
+static bool az_is_forced_mate_in_2(const chess *after_m1) {
+    if (!az_is_in_check(after_m1)) {
+        return false;
+    }
+    chess tmp = *after_m1;
+    u64 rep[MAX_LEGAL_MOVES];
+    int nr = set_legal_moves(&tmp, rep);
+    if (nr == 0) {
+        return true; // already Mate-in-1!
+    }
+    if (nr > 10) {
+        return false; // cap work to keep root expansion sub-millisecond
+    }
+    for (int i = 0; i < nr; i++) {
+        chess nxt2 = *after_m1;
+        chess_make_move(&nxt2, rep[i]);
+        if (!az_has_mate_in_1(&nxt2, NULL)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static inline int az_piece_cp(u8 p) {
+    switch (p) {
+        case FRIENDLY_PAWN:
+        case ENEMY_PAWN:
+            return 100;
+        case FRIENDLY_KNIGHT:
+        case ENEMY_KNIGHT:
+            return 320;
+        case FRIENDLY_BISHOP:
+        case ENEMY_BISHOP:
+            return 330;
+        case FRIENDLY_ROOK:
+        case ENEMY_ROOK:
+            return 500;
+        case FRIENDLY_QUEEN:
+        case ENEMY_QUEEN:
+            return 900;
+        default:
+            return 0;
+    }
+}
+
+static inline int az_fast_material(const chess *b) {
+    u64 f = b->friendly_pieces;
+    u64 e = b->enemy_pieces;
+    u64 tp = b->pawns & PAWN_MASK;
+    u64 orth = b->orthogonal_pieces;
+    u64 diag = b->diagonal_pieces;
+    u64 kings = b->kings;
+
+    int fp = __builtin_popcountll(f & tp);
+    int fn = __builtin_popcountll(f & ~(tp | orth | diag | kings));
+    int fb = __builtin_popcountll(f & diag & ~orth);
+    int fr = __builtin_popcountll(f & orth & ~diag);
+    int fq = __builtin_popcountll(f & diag & orth);
+
+    int ep = __builtin_popcountll(e & tp);
+    int en = __builtin_popcountll(e & ~(tp | orth | diag | kings));
+    int eb = __builtin_popcountll(e & diag & ~orth);
+    int er = __builtin_popcountll(e & orth & ~diag);
+    int eq = __builtin_popcountll(e & diag & orth);
+
+    return (fp - ep) * 100 + (fn - en) * 320 + (fb - eb) * 330 + (fr - er) * 500 + (fq - eq) * 900;
+}
+
+// Fast capture-only quiescence search (Path-C Tactical Booster; NEVER used during Path-A RL).
+static int az_qsearch(const chess *b, int alpha, int beta, int depth, int *nodes_left) {
+    if (*nodes_left <= 0) {
+        return az_fast_material(b);
+    }
+    (*nodes_left)--;
+
+    bool in_chk = az_is_in_check(b);
+    int stand_pat = az_fast_material(b);
+
+    if (!in_chk) {
+        if (stand_pat >= beta) {
+            return beta;
+        }
+        if (stand_pat > alpha) {
+            alpha = stand_pat;
+        }
+        if (depth <= 0) {
+            return stand_pat;
+        }
+    } else if (depth <= 0) {
+        return stand_pat;
+    }
+
+    chess tmp = *b;
+    u64 moves[MAX_LEGAL_MOVES];
+    int n = set_legal_moves(&tmp, moves);
+    if (n == 0) {
+        return in_chk ? (-20000 - depth) : 0;
+    }
+
+    // Collect tactical moves (all evasions if in check, otherwise captures & promotions)
+    u64 t_moves[MAX_LEGAL_MOVES];
+    int t_scores[MAX_LEGAL_MOVES];
+    int tn = 0;
+
+    for (int i = 0; i < n; i++) {
+        u64 m = moves[i];
+        u8 sp = get_start_piece(m);
+        u8 ep = get_end_piece(m);
+        u8 pr = get_promotion_piece(m);
+        bool is_cap = (ep != NONE) || is_en_passant_move(m);
+        bool is_promo = (pr != sp);
+        if (!in_chk && !is_cap && !is_promo) {
+            continue;
+        }
+        int vic = is_en_passant_move(m) ? 100 : az_piece_cp(ep);
+        if (is_promo) {
+            vic += az_piece_cp(pr) - 100;
+        }
+        // Delta pruning on hopeless captures when not in check
+        if (!in_chk && !is_promo && stand_pat + vic + 150 < alpha) {
+            continue;
+        }
+        t_moves[tn] = m;
+        t_scores[tn] = vic * 16 - (az_piece_cp(sp) >> 4);
+        tn++;
+    }
+
+    // Selection sort MVV-LVA (tn is tiny: typically 2..12 captures)
+    for (int i = 0; i < tn; i++) {
+        int best_j = i;
+        for (int j = i + 1; j < tn; j++) {
+            if (t_scores[j] > t_scores[best_j]) {
+                best_j = j;
+            }
+        }
+        if (best_j != i) {
+            u64 tm = t_moves[i];
+            t_moves[i] = t_moves[best_j];
+            t_moves[best_j] = tm;
+            int ts = t_scores[i];
+            t_scores[i] = t_scores[best_j];
+            t_scores[best_j] = ts;
+        }
+        chess nxt = *b;
+        chess_make_move(&nxt, t_moves[i]);
+        int sc = -az_qsearch(&nxt, -beta, -alpha, depth - 1, nodes_left);
+        if (sc >= beta) {
+            return beta;
+        }
+        if (sc > alpha) {
+            alpha = sc;
+        }
+        if (*nodes_left <= 0) {
+            break;
+        }
+    }
+    return alpha;
+}
+
+// Zero-bias tactical delta: 0 on quiet positions, non-zero ONLY when pieces are tactically hanging!
+static int az_tactical_delta(const chess *b, int *out_mate_flag) {
+    int budget = 96;
+    int base = az_fast_material(b);
+    int qs = az_qsearch(b, -25000, 25000, 6, &budget);
+    if (out_mate_flag) {
+        *out_mate_flag = 0;
+        if (qs > 15000) {
+            *out_mate_flag = 1;
+        } else if (qs < -15000) {
+            *out_mate_flag = -1;
+        }
+    }
+    return qs - base;
+}
+
+// Blend tactical quiescence delta into neural WDL (leaves quiet positions 100% untouched!).
+static void az_apply_tactical_wdl_delta(
+    const chess *b, float *w, float *d, float *l) {
+    int mate_flag = 0;
+    int delta = az_tactical_delta(b, &mate_flag);
+    if (mate_flag > 0) {
+        *w = 0.992f;
+        *d = 0.004f;
+        *l = 0.004f;
+        return;
+    }
+    if (mate_flag < 0) {
+        *w = 0.004f;
+        *d = 0.004f;
+        *l = 0.992f;
+        return;
+    }
+    if (delta > -65 && delta < 65) {
+        return; // Quiet leaf: preserve 100% pure Zero-C neural evaluation!
+    }
+    if (delta > 950) {
+        delta = 950;
+    } else if (delta < -950) {
+        delta = -950;
+    }
+    float q = *w - *l;
+    if (q > 0.992f) {
+        q = 0.992f;
+    } else if (q < -0.992f) {
+        q = -0.992f;
+    }
+    float nn_cp = 290.0f * atanhf(q);
+    float adj_cp = nn_cp + 0.75f * (float) delta;
+    float q_new = tanhf(adj_cp / 290.0f);
+    float denom = 1.0f - fabsf(q);
+    if (denom < 0.05f) {
+        denom = 0.05f;
+    }
+    float d_new = (*d) * (1.0f - fabsf(q_new)) / denom;
+    float max_d = 1.0f - fabsf(q_new);
+    if (d_new > max_d) {
+        d_new = max_d;
+    }
+    if (d_new < 0.005f) {
+        d_new = 0.005f;
+    }
+    float w_new = 0.5f * (1.0f - d_new + q_new);
+    float l_new = 0.5f * (1.0f - d_new - q_new);
+    if (w_new < 0.0f) {
+        w_new = 0.0f;
+    }
+    if (l_new < 0.0f) {
+        l_new = 0.0f;
+    }
+    float s = w_new + d_new + l_new;
+    if (s > 1e-6f) {
+        *w = w_new / s;
+        *d = d_new / s;
+        *l = l_new / s;
+    }
+}
+
+// =========================================================================
 // Batched Multi-Game MCTS Structures (Flat Pool per Game, Virtual Loss)
 // =========================================================================
 
@@ -246,6 +534,12 @@ enum {
     AZ_JOB_STEP = 3,
 };
 
+enum {
+    AZ_PROVEN_NONE = 0,
+    AZ_PROVEN_WIN = 1, // side to move has a forced checkmate win!
+    AZ_PROVEN_LOSS = 2, // side to move is forcibly checkmated!
+};
+
 typedef struct az_node {
     chess board;
     u64 move_from_parent;
@@ -257,12 +551,15 @@ typedef struct az_node {
     int32_t visits;
     int32_t vloss;
     float prior;
+    float raw_prior;
     float w_sum;
     float d_sum;
     float l_sum;
     float ml_sum;
     uint8_t expanded;
     uint8_t terminal; // 0=no, 1=stm loss (mate), 2=draw
+    uint8_t proven; // 0=none, 1=PROVEN_WIN, 2=PROVEN_LOSS
+    uint8_t pad0;
 } az_node;
 
 typedef struct az_pending_leaf {
@@ -283,10 +580,18 @@ typedef struct az_game_slot {
     u64 rng;
     int32_t slot_pending[16];
     int32_t slot_pending_n;
+    int32_t game_seq;
     char last_san[16];
+    char last_uci[8];
+
+    // Smart resignation state (15% of self-play games disable resign for calibration)
+    uint8_t no_resign_game;
+    int8_t resign_sign;
+    int16_t resign_streak;
 
     // Trajectory buffer for current in-progress game (committed when game ends)
     az_sample *traj;
+    float (*traj_search_wdl)[3];
     int32_t traj_len;
     int32_t traj_cap;
 } az_game_slot;
@@ -309,6 +614,9 @@ struct az_arena {
     int32_t q_count;
     int32_t q_cap;
     pthread_mutex_t queue_mtx;
+
+    // Per-worker scratch MCTS pool for zero-malloc thread-safe subtree reuse!
+    az_node *worker_tmp[AZ_MAX_WORKERS];
 
     // Persistent pthread worker pool (zero thread-spawn overhead per GPU batch)
     int num_threads;
@@ -343,17 +651,7 @@ struct az_arena {
     int32_t t_plies[AZ_MAX_WORKERS];
 };
 
-static inline bool az_is_in_check(const chess *b) {
-    u64 fk = b->kings & b->friendly_pieces;
-    if (!fk) {
-        return false;
-    }
-    return attacked_offset(b, __builtin_ctzll(fk));
-}
-
 static inline bool is_board_repetition(const full_chess *g, const chess *b) {
-    // Treat any repetition of a game-history position inside the MCTS search tree as a draw
-    // (2-fold search repetition, standard in KataGo/Leela/Stockfish to prevent shuffling when ahead).
     int min_i = (int) g->move_count - (int) g->half_move_count;
     if (min_i < 0) {
         min_i = 0;
@@ -364,6 +662,34 @@ static inline bool is_board_repetition(const full_chess *g, const chess *b) {
         }
     }
     return false;
+}
+
+static void roll_playout_cap(az_arena *arena, az_game_slot *sl, int reused_visits) {
+    double r = az_rng_uniform(&sl->rng);
+    int budget;
+    if (r < (double) arena->cfg.full_search_prob || arena->cfg.fast_sims >= arena->cfg.full_sims) {
+        sl->is_full_search = 1;
+        budget = arena->cfg.full_sims;
+    } else {
+        sl->is_full_search = 0;
+        budget = arena->cfg.fast_sims;
+    }
+    if (budget < 1) {
+        budget = 1;
+    }
+    if (reused_visits > 0) {
+        int min_fresh = (arena->cfg.dirichlet_eps > 0.0f) ? (budget / 2) : ((budget * 3) / 4);
+        if (min_fresh < 1) {
+            min_fresh = 1;
+        }
+        int target = reused_visits + min_fresh;
+        if (target < budget) {
+            target = budget;
+        }
+        sl->sims_target = target;
+    } else {
+        sl->sims_target = budget;
+    }
 }
 
 static void init_root_node(az_arena *arena, az_game_slot *sl) {
@@ -377,19 +703,80 @@ static void init_root_node(az_arena *arena, az_game_slot *sl) {
     root->first_child = -1;
     root->half_move = (int16_t) sl->game->half_move_count;
     root->prior = 1.0f;
+    root->raw_prior = 1.0f;
+    roll_playout_cap(arena, sl, 0);
+}
 
-    // KataGo Playout Cap Randomization
-    double r = az_rng_uniform(&sl->rng);
-    if (r < (double) arena->cfg.full_search_prob || arena->cfg.fast_sims >= arena->cfg.full_sims) {
-        sl->is_full_search = 1;
-        sl->sims_target = arena->cfg.full_sims;
-    } else {
-        sl->is_full_search = 0;
-        sl->sims_target = arena->cfg.fast_sims;
+static void apply_root_dirichlet(az_arena *arena, az_game_slot *sl);
+static void propagate_proven(az_game_slot *sl, int node_idx);
+static void probe_root_mates(az_arena *arena, az_game_slot *sl);
+
+// True MCTS Subtree Reuse: BFS-compact `child_idx`'s subtree into pool[0..new_used-1].
+static bool reroot_slot_to_child(az_arena *arena, az_game_slot *sl, int wid, int child_idx) {
+    if (child_idx <= 0 || child_idx >= sl->pool_used || !sl->pool[child_idx].expanded
+        || sl->pool[child_idx].terminal != 0 || sl->pool[child_idx].num_children <= 0) {
+        init_root_node(arena, sl);
+        return false;
     }
-    if (sl->sims_target < 1) {
-        sl->sims_target = 1;
+    if (wid < 0 || wid >= AZ_MAX_WORKERS || !arena->worker_tmp[wid]) {
+        init_root_node(arena, sl);
+        return false;
     }
+    az_node *tmp = arena->worker_tmp[wid];
+    tmp[0] = sl->pool[child_idx];
+    tmp[0].parent = -1;
+    tmp[0].move_from_parent = 0;
+    tmp[0].action_from_parent = 0;
+    tmp[0].prior = 1.0f;
+    tmp[0].raw_prior = 1.0f;
+    tmp[0].vloss = 0;
+    tmp[0].board = *(sl->game->game);
+    tmp[0].half_move = (int16_t) sl->game->half_move_count;
+
+    int new_used = 1;
+    int max_keep = (AZ_MAX_NODES_PER_GAME * 3) / 4;
+
+    for (int q = 0; q < new_used; q++) {
+        int old_fc = tmp[q].first_child;
+        int old_nc = tmp[q].num_children;
+        if (tmp[q].expanded && old_fc >= 0 && old_nc > 0 && new_used + old_nc <= max_keep) {
+            tmp[q].first_child = new_used;
+            for (int c = 0; c < old_nc; c++) {
+                az_node *dst = &tmp[new_used++];
+                *dst = sl->pool[old_fc + c];
+                dst->parent = q;
+                dst->vloss = 0;
+            }
+        } else {
+            tmp[q].first_child = -1;
+            tmp[q].num_children = 0;
+            if (tmp[q].terminal == 0) {
+                tmp[q].expanded = 0;
+            }
+        }
+    }
+
+    if (!tmp[0].expanded || tmp[0].num_children <= 0) {
+        init_root_node(arena, sl);
+        return false;
+    }
+
+    memcpy(sl->pool, tmp, (size_t) new_used * sizeof(az_node));
+    sl->pool_used = new_used;
+    sl->dirichlet_applied = 0;
+    sl->slot_pending_n = 0;
+
+    // Restore clean raw priors at new root before applying fresh Dirichlet noise
+    az_node *root = &sl->pool[0];
+    for (int c = 0; c < root->num_children; c++) {
+        az_node *ch = &sl->pool[root->first_child + c];
+        ch->prior = ch->raw_prior;
+    }
+
+    roll_playout_cap(arena, sl, root->visits);
+    probe_root_mates(arena, sl);
+    apply_root_dirichlet(arena, sl);
+    return true;
 }
 
 static void reset_slot_internal(az_arena *arena, az_game_slot *sl, const char *fen) {
@@ -399,8 +786,14 @@ static void reset_slot_internal(az_arena *arena, az_game_slot *sl, const char *f
         full_chess_initialize(sl->game);
     }
     sl->game->is_static = true;
+    sl->game_seq++;
     sl->last_san[0] = '\0';
+    sl->last_uci[0] = '\0';
     sl->traj_len = 0;
+    sl->resign_sign = 0;
+    sl->resign_streak = 0;
+    // 15% of self-play games disable resignation so Zero-C always practices full mates
+    sl->no_resign_game = (az_rng_uniform(&sl->rng) < 0.15) ? 1 : 0;
     init_root_node(arena, sl);
 }
 
@@ -449,7 +842,6 @@ static void az_dispatch_job(az_arena *arena, int kind) {
     pthread_cond_broadcast(&arena->job_cv);
     pthread_mutex_unlock(&arena->pool_mtx);
 
-    // Caller thread executes slice 0 immediately alongside helper threads
     az_run_worker_slice(arena, 0);
 
     pthread_mutex_lock(&arena->pool_mtx);
@@ -503,25 +895,24 @@ az_arena *az_arena_create(const az_config *cfg) {
         sl->pool = (az_node *) calloc(AZ_MAX_NODES_PER_GAME, sizeof(az_node));
         sl->traj_cap = AZ_MAX_GAME_SAMPLES;
         sl->traj = (az_sample *) calloc((size_t) sl->traj_cap, sizeof(az_sample));
-        if (!sl->game || !sl->pool || !sl->traj) {
+        sl->traj_search_wdl = (float (*)[3]) calloc((size_t) sl->traj_cap, sizeof(float[3]));
+        if (!sl->game || !sl->pool || !sl->traj || !sl->traj_search_wdl) {
             az_arena_destroy(a);
             return NULL;
         }
         reset_slot_internal(a, sl, NULL);
     }
 
-    // Decide worker thread count (0 = auto-detect CPU cores; 1 = single-threaded)
     int req_threads = cfg->num_threads;
     if (req_threads <= 0) {
         long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
         if (ncpu < 1) {
             ncpu = 1;
         }
-        // Use up to 8 threads (ideal for 6C/12T Ryzen while leaving headroom for PyTorch/CUDA)
         req_threads = (int) (ncpu > 8 ? 8 : ncpu);
     }
     if (cfg->num_games < 8) {
-        req_threads = 1; // Single-game UCI / unit test: zero thread overhead
+        req_threads = 1;
     }
     if (req_threads > cfg->num_games) {
         req_threads = cfg->num_games;
@@ -534,6 +925,14 @@ az_arena *az_arena_create(const az_config *cfg) {
     }
     a->num_threads = req_threads;
     a->num_workers = req_threads - 1;
+
+    for (int t = 0; t < a->num_threads; t++) {
+        a->worker_tmp[t] = (az_node *) malloc(AZ_MAX_NODES_PER_GAME * sizeof(az_node));
+        if (!a->worker_tmp[t]) {
+            az_arena_destroy(a);
+            return NULL;
+        }
+    }
 
     if (a->num_workers > 0) {
         pthread_mutex_init(&a->pool_mtx, NULL);
@@ -575,6 +974,9 @@ void az_arena_destroy(az_arena *arena) {
         arena->pool_init = false;
     }
     pthread_mutex_destroy(&arena->queue_mtx);
+    for (int t = 0; t < AZ_MAX_WORKERS; t++) {
+        free(arena->worker_tmp[t]);
+    }
     if (arena->slots) {
         for (int i = 0; i < arena->cfg.num_games; i++) {
             if (arena->slots[i].game) {
@@ -582,6 +984,7 @@ void az_arena_destroy(az_arena *arena) {
             }
             free(arena->slots[i].pool);
             free(arena->slots[i].traj);
+            free(arena->slots[i].traj_search_wdl);
         }
         free(arena->slots);
     }
@@ -603,7 +1006,22 @@ void az_arena_set_position_uci(
         return;
     }
     az_game_slot *sl = &arena->slots[game_idx];
-    reset_slot_internal(arena, sl, fen_or_null);
+
+    // Check if the previous root tree can be reused (1-ply or 2-ply advancement in UCI!)
+    bool had_tree = (sl->pool_used > 1 && sl->pool[0].expanded && sl->pool[0].num_children > 0);
+    int prev_ply = (int) sl->game->move_count;
+
+    if (fen_or_null && fen_or_null[0] != '\0') {
+        set_from_fen(sl->game, fen_or_null);
+    } else {
+        full_chess_initialize(sl->game);
+    }
+    sl->game->is_static = true;
+    sl->game_seq++;
+    sl->last_san[0] = '\0';
+    sl->last_uci[0] = '\0';
+    sl->traj_len = 0;
+
     if (moves_space_sep && moves_space_sep[0] != '\0') {
         const char *p = moves_space_sep;
         char tok[16];
@@ -627,7 +1045,127 @@ void az_arena_set_position_uci(
             }
         }
     }
-    init_root_node(arena, sl);
+
+    int new_ply = (int) sl->game->move_count;
+    int matched_node = -1;
+
+    if (had_tree && (new_ply == prev_ply + 1 || new_ply == prev_ply + 2)) {
+        const chess *target_b = sl->game->game;
+        const az_node *root = &sl->pool[0];
+        if (new_ply == prev_ply + 1) {
+            for (int i = 0; i < root->num_children; i++) {
+                int cidx = root->first_child + i;
+                if (chess_equal(&sl->pool[cidx].board, target_b)) {
+                    matched_node = cidx;
+                    break;
+                }
+            }
+        } else {
+            // 2 plies ahead: our move + opponent's reply -> check grandchildren!
+            for (int i = 0; i < root->num_children && matched_node < 0; i++) {
+                int cidx = root->first_child + i;
+                const az_node *ch = &sl->pool[cidx];
+                if (!ch->expanded || ch->num_children <= 0) {
+                    continue;
+                }
+                for (int j = 0; j < ch->num_children; j++) {
+                    int gidx = ch->first_child + j;
+                    if (chess_equal(&sl->pool[gidx].board, target_b)) {
+                        matched_node = gidx;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if (matched_node > 0) {
+        reroot_slot_to_child(arena, sl, 0, matched_node);
+    } else {
+        init_root_node(arena, sl);
+    }
+}
+
+// Exact MCTS Solver: bottom-up proven win/loss propagation (pure chess rules!).
+static void propagate_proven(az_game_slot *sl, int node_idx) {
+    int cur = node_idx;
+    while (cur > 0) {
+        uint8_t child_p = sl->pool[cur].proven;
+        if (child_p == AZ_PROVEN_NONE) {
+            break;
+        }
+        int p = sl->pool[cur].parent;
+        if (p < 0) {
+            break;
+        }
+        az_node *pn = &sl->pool[p];
+        if (pn->proven != AZ_PROVEN_NONE) {
+            break;
+        }
+        if (child_p == AZ_PROVEN_LOSS) {
+            // Child is a forced loss for opponent -> parent has a forced WIN!
+            pn->proven = AZ_PROVEN_WIN;
+            cur = p;
+        } else if (child_p == AZ_PROVEN_WIN && pn->expanded && pn->num_children > 0) {
+            bool all_win = true;
+            for (int i = 0; i < pn->num_children; i++) {
+                if (sl->pool[pn->first_child + i].proven != AZ_PROVEN_WIN) {
+                    all_win = false;
+                    break;
+                }
+            }
+            if (all_win) {
+                pn->proven = AZ_PROVEN_LOSS;
+                cur = p;
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+}
+
+// Fast pure-rules Mate-in-1 (always) and Mate-in-2 / Opponent Mate-in-1 guard (play mode) at root.
+static void probe_root_mates(az_arena *arena, az_game_slot *sl) {
+    az_node *root = &sl->pool[0];
+    if (!root->expanded || root->num_children <= 0) {
+        return;
+    }
+    bool full_mate2 = (arena->cfg.tactical_mode != 0 || arena->cfg.dirichlet_eps <= 0.0f);
+
+    for (int i = 0; i < root->num_children; i++) {
+        int cidx = root->first_child + i;
+        az_node *ch = &sl->pool[cidx];
+        if (ch->terminal == 1 || ch->proven == AZ_PROVEN_LOSS) {
+            root->proven = AZ_PROVEN_WIN;
+            continue;
+        }
+        if (ch->terminal != 0) {
+            continue;
+        }
+        if (az_is_in_check(&ch->board)) {
+            chess tmp = ch->board;
+            u64 rep[MAX_LEGAL_MOVES];
+            int nr = set_legal_moves(&tmp, rep);
+            if (nr == 0) {
+                ch->terminal = 1;
+                ch->expanded = 1;
+                ch->proven = AZ_PROVEN_LOSS;
+                root->proven = AZ_PROVEN_WIN;
+                continue;
+            }
+            if (full_mate2 && nr <= 10 && az_is_forced_mate_in_2(&ch->board)) {
+                ch->proven = AZ_PROVEN_LOSS;
+                root->proven = AZ_PROVEN_WIN;
+                continue;
+            }
+        }
+        // In play/match mode, flag any root move that allows an immediate opponent Mate-in-1!
+        if (full_mate2 && ch->proven == AZ_PROVEN_NONE && az_has_mate_in_1(&ch->board, NULL)) {
+            ch->proven = AZ_PROVEN_WIN;
+        }
+    }
 }
 
 // Backpropagate WDL (from leaf's side-to-move perspective) & Moves-Left up to root, clearing vloss.
@@ -656,8 +1194,6 @@ static void backprop_wdl(
 
 static void apply_root_dirichlet(az_arena *arena, az_game_slot *sl) {
     az_node *root = &sl->pool[0];
-    // KataGo Playout Cap Randomization: apply Dirichlet root noise ONLY on full-search moves
-    // so fast playout-cap moves don't blunder away winning positions and corrupt WDL labels!
     if (!sl->is_full_search || sl->dirichlet_applied || !root->expanded || root->num_children <= 1
         || arena->cfg.dirichlet_eps <= 0.0f) {
         return;
@@ -673,7 +1209,7 @@ static void apply_root_dirichlet(az_arena *arena, az_game_slot *sl) {
         float keep = 1.0f - eps;
         for (int i = 0; i < root->num_children; i++) {
             az_node *ch = &sl->pool[root->first_child + i];
-            ch->prior = keep * ch->prior + eps * (float) (noise[i] / sum);
+            ch->prior = keep * ch->raw_prior + eps * (float) (noise[i] / sum);
         }
     }
     sl->dirichlet_applied = 1;
@@ -710,6 +1246,28 @@ static int select_child_puct(const az_arena *arena, const az_game_slot *sl, int 
         const az_node *ch = &sl->pool[cidx];
         int cn = ch->visits + ch->vloss;
 
+        // Exact MCTS Solver overrides:
+        if (ch->proven == AZ_PROVEN_LOSS) {
+            // Forced checkmate for parent! Prefer immediate mate & shortest ML.
+            float ch_ml = (ch->visits > 0) ? (ch->ml_sum / (float) ch->visits) : 0.0f;
+            float sc = (ch->terminal == 1 ? 2000.0f : 1000.0f) - ch_ml;
+            if (sc > best_score) {
+                best_score = sc;
+                best_c = cidx;
+            }
+            continue;
+        }
+        if (ch->proven == AZ_PROVEN_WIN) {
+            // Child is a forced win for opponent (blunder into mate!) -> avoid unless all lose.
+            float ch_ml = (ch->visits > 0) ? (ch->ml_sum / (float) ch->visits) : 0.0f;
+            float sc = -1000.0f + ch_ml;
+            if (sc > best_score) {
+                best_score = sc;
+                best_c = cidx;
+            }
+            continue;
+        }
+
         // KataGo Forced Playouts at root during full-search exploration
         if (use_forced && cn > 0) {
             float forced = sqrtf(2.0f * ch->prior * (float) total_n);
@@ -722,9 +1280,20 @@ static int select_child_puct(const az_arena *arena, const az_game_slot *sl, int 
         if (cn == 0) {
             q = fpu_q;
         } else {
-            // Child's loss is parent's win; virtual loss counts as a temporary loss (-1)
             float q_raw = (ch->l_sum - ch->w_sum) - (float) ch->vloss;
             q = q_raw / (float) cn;
+            // Leela/KataGo Moves-Left Utility: break Q-saturation ties in winning/losing endgames
+            if (ch->visits > 0 && parent->visits > 0 && fabsf(q) > 0.50f) {
+                float parent_ml = parent->ml_sum / (float) parent->visits;
+                float child_ml = ch->ml_sum / (float) ch->visits;
+                float ml_diff = parent_ml - child_ml;
+                if (ml_diff > 0.25f) {
+                    ml_diff = 0.25f;
+                } else if (ml_diff < -0.25f) {
+                    ml_diff = -0.25f;
+                }
+                q += (q > 0.0f ? 1.0f : -1.0f) * 0.24f * ml_diff;
+            }
         }
         float u = arena->cfg.c_puct * ch->prior * sqrt_n / (1.0f + (float) cn);
         float sc = q + u;
@@ -752,6 +1321,11 @@ static void collect_leaves_range(az_arena *arena, int g_start, int g_end) {
         if (root->visits >= sl->sims_target) {
             continue;
         }
+        // Early stop in play/match mode when root already has a proven forced mate!
+        if (arena->cfg.dirichlet_eps <= 0.0f && root->proven == AZ_PROVEN_WIN
+            && root->visits >= 16) {
+            continue;
+        }
         if (atomic_load_explicit(&arena->pending_count, memory_order_relaxed) >= max_batch) {
             break;
         }
@@ -771,7 +1345,6 @@ static void collect_leaves_range(az_arena *arena, int g_start, int g_end) {
             }
 
             int cur = 0;
-            // Apply virtual loss down the selected path
             sl->pool[cur].vloss++;
 
             while (sl->pool[cur].expanded && !sl->pool[cur].terminal
@@ -785,6 +1358,10 @@ static void collect_leaves_range(az_arena *arena, int g_start, int g_end) {
             // Already resolved terminal? Backpropagate directly in C!
             if (leaf->terminal) {
                 if (leaf->terminal == 1) {
+                    if (leaf->proven == AZ_PROVEN_NONE) {
+                        leaf->proven = AZ_PROVEN_LOSS;
+                        propagate_proven(sl, cur);
+                    }
                     backprop_wdl(sl, cur, 0.0f, 0.0f, 1.0f, 0.0f, 1);
                 } else {
                     backprop_wdl(sl, cur, 0.0f, 1.0f, 0.0f, 0.0f, 1);
@@ -792,7 +1369,7 @@ static void collect_leaves_range(az_arena *arena, int g_start, int g_end) {
                 continue;
             }
 
-            // O(tries) L1-local duplicate leaf check within this game slot!
+            // O(tries) L1-local duplicate leaf check within this game slot
             bool dup = false;
             for (int p = 0; p < collected_here; p++) {
                 if (seen_nodes[p] == cur) {
@@ -818,23 +1395,25 @@ static void collect_leaves_range(az_arena *arena, int g_start, int g_end) {
             if (n_legal == 0) {
                 leaf->expanded = 1;
                 if (az_is_in_check(&leaf->board)) {
-                    leaf->terminal = 1; // checkmate: side to move lost!
+                    leaf->terminal = 1;
+                    leaf->proven = AZ_PROVEN_LOSS;
+                    propagate_proven(sl, cur);
                     backprop_wdl(sl, cur, 0.0f, 0.0f, 1.0f, 0.0f, 1);
                 } else {
-                    leaf->terminal = 2; // stalemate draw
+                    leaf->terminal = 2;
                     backprop_wdl(sl, cur, 0.0f, 1.0f, 0.0f, 0.0f, 1);
                 }
                 continue;
             }
-            if (leaf->half_move >= 100 || is_insufficient_material(&leaf->board)
-                || (cur > 0 && is_board_repetition(sl->game, &leaf->board))) {
+            bool leaf_rep = (cur > 0 && is_board_repetition(sl->game, &leaf->board));
+            if (leaf->half_move >= 100 || is_insufficient_material(&leaf->board) || leaf_rep) {
                 leaf->expanded = 1;
                 leaf->terminal = 2;
                 backprop_wdl(sl, cur, 0.0f, 1.0f, 0.0f, 0.0f, 1);
                 continue;
             }
 
-            // Atomically claim a batch slot for GPU neural evaluation (zero lock contention!)
+            // Atomically claim a batch slot for GPU neural evaluation
             int bi = atomic_fetch_add_explicit(&arena->pending_count, 1, memory_order_relaxed);
             if (bi >= max_batch) {
                 int u = cur;
@@ -854,8 +1433,9 @@ static void collect_leaves_range(az_arena *arena, int g_start, int g_end) {
             memcpy(pl->legal_moves, legal, (size_t) n_legal * sizeof(u64));
             memcpy(pl->legal_actions, actions, (size_t) n_legal * sizeof(int32_t));
 
-            az_encode_board(
-                &leaf->board, (int) leaf->half_move, out_planes + (size_t) bi * AZ_BOARD_FLOATS);
+            int root_rep = (cur == 0 && position_frequency(sl->game) >= 2) ? 1 : 0;
+            az_encode_board_ctx(&leaf->board, (int) leaf->half_move, root_rep,
+                out_planes + (size_t) bi * AZ_BOARD_FLOATS);
             out_legal_counts[bi] = n_legal;
             memcpy(out_legal_actions + (size_t) bi * MAX_LEGAL_MOVES, actions,
                 (size_t) n_legal * sizeof(int32_t));
@@ -872,6 +1452,7 @@ static void apply_evals_range(az_arena *arena, int g_start, int g_end) {
     const float *policy_priors = arena->cur_priors;
     const float *wdl = arena->cur_wdl;
     const float *moves_left = arena->cur_ml;
+    bool use_tactical = (arena->cfg.tactical_mode != 0);
 
     for (int gi = g_start; gi < g_end; gi++) {
         az_game_slot *sl = &arena->slots[gi];
@@ -893,6 +1474,11 @@ static void apply_evals_range(az_arena *arena, int g_start, int g_end) {
                 ml = 0.0f;
             }
 
+            // Path-C Tactical Hybrid Booster (ONLY when tactical_mode != 0; OFF in pure Path-A RL!)
+            if (use_tactical) {
+                az_apply_tactical_wdl_delta(&leaf->board, &w, &d, &l);
+            }
+
             if (!leaf->expanded && sl->pool_used + pl->num_legal <= AZ_MAX_NODES_PER_GAME) {
                 leaf->first_child = sl->pool_used;
                 leaf->num_children = (int16_t) pl->num_legal;
@@ -911,9 +1497,11 @@ static void apply_evals_range(az_arena *arena, int g_start, int g_end) {
                     ch->half_move
                         = (sp == FRIENDLY_PAWN || is_cap) ? 0 : (int16_t) (leaf->half_move + 1);
                     ch->prior = priors[c];
+                    ch->raw_prior = priors[c];
                 }
                 leaf->expanded = 1;
                 if (pl->node_idx == 0) {
+                    probe_root_mates(arena, sl);
                     apply_root_dirichlet(arena, sl);
                 }
             }
@@ -977,6 +1565,17 @@ static void compute_root_policy(
         return;
     }
 
+    // If a forced checkmate child exists, put 100% policy target on it!
+    for (int i = 0; i < nc; i++) {
+        const az_node *ch = &sl->pool[root->first_child + i];
+        if (ch->terminal == 1 || ch->proven == AZ_PROVEN_LOSS) {
+            for (int j = 0; j < nc; j++) {
+                out_probs[j] = (j == i) ? 1.0f : 0.0f;
+            }
+            return;
+        }
+    }
+
     int best_i = 0;
     int best_v = -1;
     for (int i = 0; i < nc; i++) {
@@ -1003,7 +1602,6 @@ static void compute_root_policy(
         if (prune && i != best_i && eff_v > 0) {
             int max_forced = (int) sqrtf(2.0f * ch->prior * (float) root->visits);
             float cq = (ch->l_sum - ch->w_sum) / (float) ch->visits;
-            // Subtract forced playouts that wouldn't have been selected by PUCT naturally
             while (eff_v > 0 && max_forced > 0) {
                 float puct_at = cq + arena->cfg.c_puct * ch->prior * sqrt_n / (float) eff_v;
                 if (puct_at < best_puct) {
@@ -1014,7 +1612,7 @@ static void compute_root_policy(
                 }
             }
             if (eff_v == 1) {
-                eff_v = 0; // prune single-visit exploration noise
+                eff_v = 0;
             }
         }
         out_probs[i] = (float) eff_v;
@@ -1034,7 +1632,6 @@ static void compute_root_policy(
 
 static void push_sample_queue(az_arena *arena, const az_sample *s) {
     if (arena->q_count >= arena->q_cap) {
-        // Drop oldest if queue full
         arena->q_head = (arena->q_head + 1) % arena->q_cap;
         arena->q_count--;
     }
@@ -1052,6 +1649,9 @@ static void step_moves_range(az_arena *arena, int wid, int g_start, int g_end) {
         az_game_slot *sl = &arena->slots[gi];
         az_node *root = &sl->pool[0];
 
+        bool resigned = false;
+        int resigned_white_outcome = 0;
+
         bool game_done = sl->game->is_game_over
                          || (int) sl->game->move_count >= arena->cfg.max_plies
                          || position_frequency(sl->game) >= 3 || sl->game->half_move_count >= 100;
@@ -1061,72 +1661,136 @@ static void step_moves_range(az_arena *arena, int wid, int g_start, int g_end) {
             float probs[MAX_LEGAL_MOVES];
             compute_root_policy(arena, sl, probs);
 
+            // Compute MCTS root WDL for Q-blended targets & smart resignation
+            float rw = 0.33f, rd = 0.34f, rl = 0.33f;
+            if (root->visits > 0) {
+                float inv = 1.0f / (float) root->visits;
+                rw = root->w_sum * inv;
+                rd = root->d_sum * inv;
+                rl = root->l_sum * inv;
+            }
+
             // Record training sample in trajectory buffer
             if (sl->traj_len < sl->traj_cap) {
-                az_sample *sp = &sl->traj[sl->traj_len++];
+                int k = sl->traj_len++;
+                az_sample *sp = &sl->traj[k];
                 memset(sp, 0, sizeof(*sp));
-                az_encode_board(sl->game->game, (int) sl->game->half_move_count, sp->planes);
+                int is_rep = (position_frequency(sl->game) >= 2) ? 1 : 0;
+                az_encode_board_ctx(
+                    sl->game->game, (int) sl->game->half_move_count, is_rep, sp->planes);
                 sp->num_legal = root->num_children;
                 for (int i = 0; i < root->num_children; i++) {
                     sp->actions[i] = sl->pool[root->first_child + i].action_from_parent;
                     sp->probs[i] = probs[i];
                 }
-                // Temporarily store side-to-move (0=White, 1=Black) in wdl[0] until game finishes
                 sp->wdl[0] = is_flipped(sl->game->game) ? 1.0f : 0.0f;
-                sp->moves_left = (float) sl->game->move_count; // ply index; converted at end!
+                sp->moves_left = (float) sl->game->move_count;
                 sp->is_full_search = sl->is_full_search;
+                sl->traj_search_wdl[k][0] = rw;
+                sl->traj_search_wdl[k][1] = rd;
+                sl->traj_search_wdl[k][2] = rl;
             }
 
-            // Pick move according to temperature schedule:
-            // Full-search opening moves use T=1.0 proportional sampling; fast-cap opening moves
-            // use sharpened T=0.5 (v^2) so fast rollouts stay varied without random 1-visit blunders.
-            int chosen_i = 0;
-            if ((int) sl->game->move_count < arena->cfg.temp_plies
-                && arena->cfg.dirichlet_eps > 0.0f) {
-                double vsum = 0.0;
-                double weights[MAX_LEGAL_MOVES];
-                for (int i = 0; i < root->num_children; i++) {
-                    double v = (double) sl->pool[root->first_child + i].visits;
-                    weights[i] = sl->is_full_search ? v : (v * v);
-                    vsum += weights[i];
+            // Smart Resignation check (85% of self-play games; requires 4 consecutive plies beyond threshold)
+            if (arena->cfg.resign_threshold < -0.5f && !sl->no_resign_game
+                && (int) sl->game->move_count >= 30 && root->visits >= 16) {
+                float rq = rw - rl;
+                float thr = fabsf(arena->cfg.resign_threshold);
+                if (fabsf(rq) >= thr) {
+                    int w_sign = (rq > 0.0f) ? (is_flipped(sl->game->game) ? -1 : 1)
+                                             : (is_flipped(sl->game->game) ? 1 : -1);
+                    if (w_sign == (int) sl->resign_sign) {
+                        sl->resign_streak++;
+                    } else {
+                        sl->resign_sign = (int8_t) w_sign;
+                        sl->resign_streak = 1;
+                    }
+                    if (sl->resign_streak >= 4) {
+                        resigned = true;
+                        resigned_white_outcome = w_sign;
+                        game_done = true;
+                    }
+                } else {
+                    sl->resign_streak = 0;
                 }
-                double r = az_rng_uniform(&sl->rng) * vsum;
-                double acc = 0.0;
+            }
+
+            if (!game_done) {
+                // Smooth opening temperature schedule:
+                //   Plies 0..7: T=1.0 on full search, T=0.5 on fast search
+                //   Plies 8..temp_plies-1: T=0.5 (v^2) sharpened sampling
+                //   Plies >= temp_plies: greedy (always prefers proven mate!)
+                int chosen_i = 0;
+                int forced_mate_i = -1;
                 for (int i = 0; i < root->num_children; i++) {
-                    acc += weights[i];
-                    if (acc >= r) {
-                        chosen_i = i;
+                    const az_node *ch = &sl->pool[root->first_child + i];
+                    if (ch->terminal == 1 || ch->proven == AZ_PROVEN_LOSS) {
+                        forced_mate_i = i;
                         break;
                     }
                 }
-            } else {
-                int best_v = -1;
-                for (int i = 0; i < root->num_children; i++) {
-                    int v = sl->pool[root->first_child + i].visits;
-                    if (v > best_v) {
-                        best_v = v;
-                        chosen_i = i;
+
+                if (forced_mate_i >= 0) {
+                    chosen_i = forced_mate_i;
+                } else if ((int) sl->game->move_count < arena->cfg.temp_plies
+                           && arena->cfg.dirichlet_eps > 0.0f) {
+                    bool linear_t = (sl->is_full_search && (int) sl->game->move_count < 8);
+                    double vsum = 0.0;
+                    double weights[MAX_LEGAL_MOVES];
+                    for (int i = 0; i < root->num_children; i++) {
+                        const az_node *ch = &sl->pool[root->first_child + i];
+                        double v = (ch->proven == AZ_PROVEN_WIN) ? 0.0 : (double) ch->visits;
+                        weights[i] = linear_t ? v : (v * v);
+                        vsum += weights[i];
+                    }
+                    if (vsum > 1e-12) {
+                        double r = az_rng_uniform(&sl->rng) * vsum;
+                        double acc = 0.0;
+                        for (int i = 0; i < root->num_children; i++) {
+                            acc += weights[i];
+                            if (acc >= r) {
+                                chosen_i = i;
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    int best_v = -1;
+                    for (int i = 0; i < root->num_children; i++) {
+                        const az_node *ch = &sl->pool[root->first_child + i];
+                        if (ch->proven == AZ_PROVEN_WIN && best_v >= 0) {
+                            continue;
+                        }
+                        if (ch->visits > best_v) {
+                            best_v = ch->visits;
+                            chosen_i = i;
+                        }
                     }
                 }
-            }
 
-            u64 chosen_mv = sl->pool[root->first_child + chosen_i].move_from_parent;
-            static_move_to_san(sl->game->game, sl->game->current_legal_moves, chosen_mv,
-                sl->last_san, sizeof(sl->last_san));
-            make_move(sl->game, chosen_mv);
+                int chosen_node_idx = root->first_child + chosen_i;
+                u64 chosen_mv = sl->pool[chosen_node_idx].move_from_parent;
+                static_move_to_san(sl->game->game, sl->game->current_legal_moves, chosen_mv,
+                    sl->last_san, sizeof(sl->last_san));
+                az_move_to_uci(sl->game->game, chosen_mv, sl->last_uci);
+                make_move(sl->game, chosen_mv);
 
-            game_done = sl->game->is_game_over || (int) sl->game->move_count >= arena->cfg.max_plies
-                        || position_frequency(sl->game) >= 3 || sl->game->half_move_count >= 100;
-            if (!game_done) {
-                init_root_node(arena, sl);
+                game_done = sl->game->is_game_over
+                            || (int) sl->game->move_count >= arena->cfg.max_plies
+                            || position_frequency(sl->game) >= 3
+                            || sl->game->half_move_count >= 100;
+                if (!game_done) {
+                    // TRUE MCTS SUBTREE REUSE! Carry over chosen child's tree into next ply!
+                    reroot_slot_to_child(arena, sl, wid, chosen_node_idx);
+                }
             }
         }
 
         if (game_done) {
-            // Determine exact pure-rules outcome from White's perspective: +1=White win, 0=Draw, -1=Black win
             int white_outcome = 0;
-            if (sl->game->is_game_over && !sl->game->is_draw) {
-                // Side currently to move is checkmated!
+            if (resigned) {
+                white_outcome = resigned_white_outcome;
+            } else if (sl->game->is_game_over && !sl->game->is_draw) {
                 white_outcome = is_flipped(sl->game->game) ? 1 : -1;
             }
             if (white_outcome > 0) {
@@ -1140,14 +1804,22 @@ static void step_moves_range(az_arena *arena, int wid, int g_start, int g_end) {
             plies_sum += final_plies;
             finished++;
 
-            // Finalize WDL & Moves-Left targets on all trajectory samples and enqueue!
+            // Finalize Q-Blended WDL & Moves-Left targets on all trajectory samples!
             for (int k = 0; k < sl->traj_len; k++) {
                 az_sample *sp = &sl->traj[k];
                 bool was_black = (sp->wdl[0] > 0.5f);
                 int stm_res = was_black ? -white_outcome : white_outcome;
-                sp->wdl[0] = (stm_res > 0) ? 1.0f : 0.0f;
-                sp->wdl[1] = (stm_res == 0) ? 1.0f : 0.0f;
-                sp->wdl[2] = (stm_res < 0) ? 1.0f : 0.0f;
+                float ow = (stm_res > 0) ? 1.0f : 0.0f;
+                float od = (stm_res == 0) ? 1.0f : 0.0f;
+                float ol = (stm_res < 0) ? 1.0f : 0.0f;
+
+                // KataGo Q-Blending: mix final outcome with MCTS root search WDL to cut variance
+                float q_blend = sp->is_full_search ? 0.30f : 0.12f;
+                float keep = 1.0f - q_blend;
+                sp->wdl[0] = keep * ow + q_blend * sl->traj_search_wdl[k][0];
+                sp->wdl[1] = keep * od + q_blend * sl->traj_search_wdl[k][1];
+                sp->wdl[2] = keep * ol + q_blend * sl->traj_search_wdl[k][2];
+
                 int rem = final_plies - (int) sp->moves_left;
                 if (rem < 0) {
                     rem = 0;
@@ -1258,6 +1930,7 @@ bool az_arena_get_snapshot(const az_arena *arena, int game_idx, az_game_snapshot
     const az_node *root = &sl->pool[0];
 
     out->game_id = game_idx;
+    out->game_seq = sl->game_seq;
     out->ply = (int32_t) sl->game->move_count;
     out->sims_done = root->visits;
     out->sims_target = sl->sims_target;
@@ -1268,7 +1941,6 @@ bool az_arena_get_snapshot(const az_arena *arena, int game_idx, az_game_snapshot
         float w = root->w_sum * inv;
         float d = root->d_sum * inv;
         float l = root->l_sum * inv;
-        // Convert to White perspective for WebUI consistency
         if (is_flipped(sl->game->game)) {
             out->root_w = l;
             out->root_d = d;
@@ -1288,6 +1960,7 @@ bool az_arena_get_snapshot(const az_arena *arena, int game_idx, az_game_snapshot
 
     get_fen(sl->game, out->fen);
     snprintf(out->last_san, sizeof(out->last_san), "%s", sl->last_san);
+    snprintf(out->last_uci, sizeof(out->last_uci), "%s", sl->last_uci);
 
     chess white_view = *(sl->game->game);
     if (is_flipped(&white_view)) {
@@ -1366,17 +2039,64 @@ bool az_arena_best_move(const az_arena *arena, int game_idx, float temperature, 
     }
 
     int chosen = 0;
-    if (temperature > 0.05f) {
+
+    // 1. Always deliver an immediate Mate-in-1 if present!
+    int mate1_idx = -1;
+    int proven_mate_idx = -1;
+    float best_mate_ml = 1e9f;
+    bool has_safe_move = false;
+
+    for (int i = 0; i < root->num_children; i++) {
+        const az_node *ch = &sl->pool[root->first_child + i];
+        if (ch->terminal == 1) {
+            mate1_idx = i;
+            break;
+        }
+        if (ch->proven == AZ_PROVEN_LOSS) {
+            float ml_est = (ch->visits > 0) ? (ch->ml_sum / (float) ch->visits) : 0.02f;
+            if (proven_mate_idx < 0 || ml_est < best_mate_ml) {
+                proven_mate_idx = i;
+                best_mate_ml = ml_est;
+            }
+        }
+        if (ch->proven != AZ_PROVEN_WIN) {
+            has_safe_move = true;
+        }
+    }
+
+    if (mate1_idx >= 0) {
+        chosen = mate1_idx;
+    } else if (proven_mate_idx >= 0) {
+        chosen = proven_mate_idx;
+    } else if (temperature > 0.05f) {
+        int best_v = 0;
+        for (int i = 0; i < root->num_children; i++) {
+            const az_node *ch = &sl->pool[root->first_child + i];
+            if (has_safe_move && ch->proven == AZ_PROVEN_WIN) {
+                continue;
+            }
+            if (ch->visits > best_v) {
+                best_v = ch->visits;
+            }
+        }
+        int min_v = (int) ((double) best_v * 0.35);
+        if (min_v < 1) {
+            min_v = 1;
+        }
         double weights[MAX_LEGAL_MOVES];
         double sum = 0.0;
         double inv_t = 1.0 / (double) temperature;
         for (int i = 0; i < root->num_children; i++) {
-            double v = (double) sl->pool[root->first_child + i].visits;
-            weights[i] = (v > 0.0) ? pow(v, inv_t) : 0.0;
+            const az_node *ch = &sl->pool[root->first_child + i];
+            int vi = (has_safe_move && ch->proven == AZ_PROVEN_WIN) ? 0 : ch->visits;
+            weights[i] = (vi >= min_v) ? pow((double) vi, inv_t) : 0.0;
             sum += weights[i];
         }
         if (sum > 1e-12) {
-            u64 tmp_rng = arena->rng ^ (u64) (root->visits * 2654435761u + 17u);
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            u64 tmp_rng = arena->rng ^ (u64) ts.tv_nsec ^ ((u64) ts.tv_sec << 32)
+                          ^ (u64) (root->visits * 2654435761u + 17u);
             double r = az_rng_uniform(&tmp_rng) * sum;
             double acc = 0.0;
             for (int i = 0; i < root->num_children; i++) {
@@ -1392,6 +2112,9 @@ bool az_arena_best_move(const az_arena *arena, int game_idx, float temperature, 
         float best_p = -1.0f;
         for (int i = 0; i < root->num_children; i++) {
             const az_node *ch = &sl->pool[root->first_child + i];
+            if (has_safe_move && ch->proven == AZ_PROVEN_WIN) {
+                continue;
+            }
             if (ch->visits > best_v || (ch->visits == best_v && ch->prior > best_p)) {
                 best_v = ch->visits;
                 best_p = ch->prior;
@@ -1400,12 +2123,51 @@ bool az_arena_best_move(const az_arena *arena, int game_idx, float temperature, 
         }
     }
 
+    // Path-C Root Tactical Safety Guard (play mode only, no forced mate, greedy):
+    // If the top MCTS move drops >= 240 cp to an immediate tactical sequence (hanging piece / fork),
+    // rescue to the best visited non-blundering move!
+    if (arena->cfg.tactical_mode != 0 && mate1_idx < 0 && proven_mate_idx < 0
+        && temperature <= 0.05f) {
+        const az_node *ch_pick = &sl->pool[root->first_child + chosen];
+        int mf = 0;
+        // Opponent's tactical delta after our move (positive = opponent wins material!)
+        int opp_gain = az_tactical_delta(&ch_pick->board, &mf);
+        if (mf > 0 || opp_gain >= 240) {
+            int best_alt = chosen;
+            float best_alt_score = -1e9f;
+            for (int i = 0; i < root->num_children; i++) {
+                const az_node *ch = &sl->pool[root->first_child + i];
+                if (has_safe_move && ch->proven == AZ_PROVEN_WIN) {
+                    continue;
+                }
+                int alt_mf = 0;
+                int alt_opp_gain = az_tactical_delta(&ch->board, &alt_mf);
+                if (alt_mf > 0) {
+                    continue;
+                }
+                float cq = (ch->visits > 0) ? ((ch->l_sum - ch->w_sum) / (float) ch->visits) : -0.5f;
+                float sc = cq * 300.0f - (float) alt_opp_gain + 15.0f * logf(1.0f + (float) ch->visits);
+                if (alt_mf < 0) {
+                    sc += 5000.0f;
+                }
+                if (sc > best_alt_score) {
+                    best_alt_score = sc;
+                    best_alt = i;
+                }
+            }
+            chosen = best_alt;
+        }
+    }
+
     const az_node *ch = &sl->pool[root->first_child + chosen];
     az_move_to_uci(sl->game->game, ch->move_from_parent, out_uci);
     if (out_wdl) {
-        if (ch->visits > 0) {
+        if (ch->terminal == 1 || ch->proven == AZ_PROVEN_LOSS) {
+            out_wdl[0] = 0.995f;
+            out_wdl[1] = 0.002f;
+            out_wdl[2] = 0.003f;
+        } else if (ch->visits > 0) {
             float inv = 1.0f / (float) ch->visits;
-            // Side-to-move's WDL is child's flipped (L, D, W)
             out_wdl[0] = ch->l_sum * inv;
             out_wdl[1] = ch->d_sum * inv;
             out_wdl[2] = ch->w_sum * inv;

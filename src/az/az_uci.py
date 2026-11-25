@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Zero-C UCI Engine: Standard UCI wrapper around C Batched MCTS + SE-ResNet checkpoints."""
+"""Zero-C v2 UCI Engine: Pure FP16 Batched C MCTS + Subtree Reuse + Path-C Tactical Hybrid."""
 import math
 import os
 import sys
@@ -15,7 +15,6 @@ from model import ZeroCNet, load_checkpoint
 
 def wdl_to_cp(w: float, l: float) -> int:
     q = max(-0.995, min(0.995, float(w - l)))
-    # Smooth logit mapping to approximate centipawns
     cp = 290.0 * math.atanh(q)
     return int(max(-3000, min(3000, round(cp))))
 
@@ -24,12 +23,16 @@ class ZeroCUci:
     def __init__(self):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.use_amp = self.device.type == "cuda"
+        if self.use_amp:
+            torch.backends.cudnn.benchmark = True
         self.root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
         self.ckpt_path = os.path.join(self.root, "data", "az", "latest.pt")
         self.ckpt_mtime = -1.0
         self.gen = 0
-        self.simulations = 240
+        self.simulations = 600
         self.temperature = 0.0
+        self.opening_variety = True
+        self.tactical_hybrid = True
         self.model = None
         self.arena = None
         self.fen = None
@@ -44,16 +47,17 @@ class ZeroCUci:
             if force or mt != self.ckpt_mtime or self.model is None:
                 self.model, ckpt = load_checkpoint(self.ckpt_path, self.device)
                 if self.use_amp:
-                    self.model = self.model.to(memory_format=torch.channels_last)
+                    self.model = self.model.half().to(memory_format=torch.channels_last)
                 self.model.eval()
                 self.ckpt_mtime = mt
                 self.gen = int(ckpt.get("meta", {}).get("gen", 0))
+                if self.arena is not None:
+                    self.arena.lib.az_arena_reset_game(self.arena.ptr, 0, None)
                 return True
         elif self.model is None:
-            # Untrained Gen 0 tabula rasa network (pure random weights!)
-            self.model = ZeroCNet(6, 96).to(self.device)
+            self.model = ZeroCNet(10, 128).to(self.device)
             if self.use_amp:
-                self.model = self.model.to(memory_format=torch.channels_last)
+                self.model = self.model.half().to(memory_format=torch.channels_last)
             self.model.eval()
             self.gen = 0
             return True
@@ -73,21 +77,24 @@ class ZeroCUci:
             dirichlet_eps=0.0,  # Pure match search (no exploration noise)
             temp_plies=0,
             max_plies=400,
-            batch_per_game=8,
+            batch_per_game=12,
             forced_playouts=0,
             num_threads=1,
-            seed=int(time.time() * 1000) & 0xFFFFFFFFFFFFFFFF,
+            seed=int.from_bytes(os.urandom(8), "little"),
+            resign_threshold=0.0,
+            tactical_mode=1 if self.tactical_hybrid else 0,
         )
         self.arena = AzArena(cfg, pinned_torch=torch if self.use_amp else None)
 
     @torch.no_grad()
-    def search(self, movetime_ms: int = 800, max_nodes: int = 0):
+    def search(self, movetime_ms: int = 2000, max_nodes: int = 0):
         self._load_model_if_needed(force=False)
         target_sims = max_nodes if max_nodes > 0 else self.simulations
         if target_sims != self.arena.cfg.full_sims:
             self.simulations = target_sims
             self._rebuild_arena()
 
+        # Automatically reuses the C MCTS subtree if the game advanced 1 or 2 plies!
         self.arena.set_position(0, self.fen, self.moves)
         t0 = time.time()
         deadline = t0 + (movetime_ms / 1000.0) if movetime_ms > 0 else 1e18
@@ -102,8 +109,8 @@ class ZeroCUci:
                 break
             if self.arena.pinned and self.use_amp:
                 x = self.arena.planes_t[:b].to(
-                    self.device, memory_format=torch.channels_last, non_blocking=True
-                )
+                    self.device, dtype=torch.float16, non_blocking=True
+                ).to(memory_format=torch.channels_last)
                 la = self.arena.legal_actions_t[:b, :max_nl].to(
                     self.device, dtype=torch.long, non_blocking=True
                 )
@@ -114,8 +121,8 @@ class ZeroCUci:
                     self.device, dtype=torch.long
                 )
                 lc = torch.from_numpy(self.arena.legal_counts[:b]).to(self.device)
-            with torch.amp.autocast(device_type=self.device.type, dtype=torch.float16, enabled=self.use_amp):
-                pol_logits, wdl_logits, ml_pred = self.model(x)
+
+            pol_logits, wdl_logits, ml_pred = self.model(x)
             gathered = pol_logits.float().gather(1, la)
             valid = self.col_arange[:max_nl].unsqueeze(0) < lc.unsqueeze(1)
             gathered = gathered.masked_fill(~valid, -1e9)
@@ -132,19 +139,28 @@ class ZeroCUci:
                 break
 
         elapsed = max(0.001, time.time() - t0)
-        best_uci, wdl, ml = self.arena.best_move(0, temperature=self.temperature)
+        cur_ply = len(self.moves.split()) if self.moves else 0
+        eff_temp = self.temperature
+        if self.opening_variety and eff_temp <= 0.05 and cur_ply < 10:
+            eff_temp = 0.50
+        best_uci, wdl, ml = self.arena.best_move(0, temperature=eff_temp)
         snap = self.arena.get_snapshot(0)
         cp = wdl_to_cp(wdl[0], wdl[2])
         nps = int(total_evals / elapsed)
-        depth_est = max(1, int(math.log2(max(2, total_evals))))
-        top_str = ""
+        eff_visits = snap["sims_done"] if snap else total_evals
+        depth_est = max(1, int(math.log2(max(2, eff_visits))))
+        mode_tag = "Hybrid" if self.tactical_hybrid else "Pure"
         if snap and snap["top"]:
             top_str = " ".join(
                 f"{t['san']}:{t['visits']}({int(t['prior']*100)}%)" for t in snap["top"]
             )
-            print(f"info string Zero-C Gen {self.gen} WDL={wdl[0]*100:.0f}/{wdl[1]*100:.0f}/{wdl[2]*100:.0f}% ML={ml:.0f} top=[{top_str}]", flush=True)
+            print(
+                f"info string Zero-C Gen {self.gen} [{mode_tag} {eff_visits}v] "
+                f"WDL={wdl[0]*100:.0f}/{wdl[1]*100:.0f}/{wdl[2]*100:.0f}% ML={ml:.0f} top=[{top_str}]",
+                flush=True,
+            )
         print(
-            f"info depth {depth_est} score cp {cp} nodes {total_evals} nps {nps} time {int(elapsed*1000)} pv {best_uci}",
+            f"info depth {depth_est} score cp {cp} nodes {eff_visits} nps {nps} time {int(elapsed*1000)} pv {best_uci}",
             flush=True,
         )
         print(f"bestmove {best_uci}", flush=True)
@@ -155,10 +171,12 @@ class ZeroCUci:
             if not line:
                 continue
             if line == "uci":
-                print(f"id name Zero-C AlphaZero (Gen {self.gen})", flush=True)
+                print(f"id name Zero-C v2 AlphaZero (Gen {self.gen})", flush=True)
                 print("id author Chess-in-C", flush=True)
                 print("option name Checkpoint type string default data/az/latest.pt", flush=True)
-                print("option name Simulations type spin default 240 min 16 max 8192", flush=True)
+                print("option name Simulations type spin default 600 min 16 max 8192", flush=True)
+                print("option name OpeningVariety type check default true", flush=True)
+                print("option name TacticalHybrid type check default true", flush=True)
                 print("uciok", flush=True)
             elif line == "isready":
                 self._load_model_if_needed(force=False)
@@ -166,6 +184,8 @@ class ZeroCUci:
             elif line == "ucinewgame":
                 self.fen = None
                 self.moves = ""
+                if self.arena is not None:
+                    self.arena.lib.az_arena_reset_game(self.arena.ptr, 0, None)
                 self._load_model_if_needed(force=False)
             elif line.startswith("setoption "):
                 parts = line.split(" name ", 1)
@@ -186,6 +206,13 @@ class ZeroCUci:
                             self._rebuild_arena()
                         except ValueError:
                             pass
+                    elif name == "OpeningVariety":
+                        self.opening_variety = val.lower() in ("true", "1", "yes", "on")
+                    elif name == "TacticalHybrid":
+                        new_val = val.lower() in ("true", "1", "yes", "on")
+                        if new_val != self.tactical_hybrid:
+                            self.tactical_hybrid = new_val
+                            self._rebuild_arena()
             elif line.startswith("position "):
                 p = line[9:].strip()
                 if " moves " in p:
@@ -200,7 +227,7 @@ class ZeroCUci:
                     self.fen = pos_part[4:].strip()
             elif line.startswith("go"):
                 toks = line.split()
-                mt = 800
+                mt = 2000
                 nodes = 0
                 for i in range(1, len(toks) - 1):
                     if toks[i] == "movetime":
