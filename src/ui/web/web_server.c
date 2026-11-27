@@ -42,7 +42,9 @@
 #define HYBRID_NNUE_LEVEL   17
 #define APEX_PURE_LEVEL     18
 #define APEX_SYZYGY_LEVEL   19
+#define AZ_TOY_BOT_LEVEL    20
 #define AZ_V1_CKPT_PATH     "data/az_v1_gen4320/latest.pt"
+#define AZ_TOY_CKPT_PATH    "data/az_toy/latest.pt"
 #define HYBRID_UNLOCK_FLAG  "data/az/v2_complete.flag"
 #define HYBRID_NNUE_FILE    "data/chess_net_zero_v4.nnue"
 
@@ -62,10 +64,12 @@ typedef struct app_state {
     uci_engine *sf_ref; // Dedicated full-strength Stockfish objective referee
     uci_engine *az_uci;
     uci_engine *az_v1_uci; // Dedicated max-strength handle for immortalized Zero-C v1 Champion
+    uci_engine *az_toy_uci; // Dedicated handle for Zero-C Lite (15-min Toy Net Sprint)
     uci_engine *hybrid_uci; // Mythic Titan-Zero hybrid boss engine (unlocks after Zero-C v2)
     char hybrid_last_mode[32];
     uci_engine *apex_uci; // Project 3000 Apex-C (Upgraded Search + Big NNUE v4 when trained)
     bool apex_loaded_v4;
+    bool apex_loaded_spsa;
     uci_engine *sf_tb; // Syzygy 5-piece root oracle (only active when data/syzygy/ is installed)
     pid_t az_pid;
     bool az_running;
@@ -276,7 +280,7 @@ static int json_get_int(const char *json, const char *key, int default_val) {
 
 static int max_allowed_level(const app_state *st) {
     (void) st;
-    return APEX_SYZYGY_LEVEL;
+    return AZ_TOY_BOT_LEVEL;
 }
 
 static bool apex_v4_nnue_ready(void) {
@@ -285,6 +289,123 @@ static bool apex_v4_nnue_ready(void) {
 
 static bool apex_syzygy_ready(const app_state *st) {
     return st->sf != NULL && syzygy_installed_pieces() >= 3;
+}
+
+static bool apex_compute_started(void) {
+    struct stat dgst;
+    bool has_dg = (stat("data/datagen_v4.bin", &dgst) == 0 && dgst.st_size >= 3600);
+    return has_dg || apex_v4_nnue_ready();
+}
+
+static bool az_has_compute(void) {
+    return access("data/az/latest.pt", R_OK) == 0 && access("data/az/replay.npz", R_OK) == 0;
+}
+
+static int json_status_read_int(const char *path, const char *key, int default_val) {
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        return default_val;
+    }
+    char buf[1024];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = '\0';
+    fclose(f);
+    return json_get_int(buf, key, default_val);
+}
+
+static int az_live_est_elo(void) {
+    if (!az_has_compute()) {
+        return 300;
+    }
+    int g = json_status_read_int("data/az/status.json", "total_games", 0);
+    if (g <= 0) {
+        return 450;
+    }
+    // Realistic empirical AlphaZero curve calibrated against Stockfish 14.1:
+    // ~750 @ 5k, ~1050 @ 50k, ~1270 @ 200k, ~1400 @ 450k, ~1650 @ 600k+
+    double elo = 380.0 + 185.0 * log10(1.0 + (double) g / 100.0);
+    if (g >= 400000) {
+        elo += (double) (g - 400000) / 1400.0;
+    }
+    if (elo < 400.0) {
+        elo = 400.0;
+    }
+    if (elo > 1950.0) {
+        elo = 1950.0;
+    }
+    return (int) (elo + 0.5);
+}
+
+static int toy_live_est_elo(void) {
+    if (access("data/az_toy/latest.pt", R_OK) != 0) {
+        return 300;
+    }
+    int gen = json_status_read_int("data/az_toy/status.json", "gen", 0);
+    int est = 320 + gen * 13;
+    if (est > 1180) {
+        est = 1180;
+    }
+    return est;
+}
+
+typedef struct {
+    bool syzygy_done;
+    bool datagen_done;
+    bool nnue_v4_done;
+    bool spsa_done;
+    bool distill_done;
+} p3k_phases;
+
+static void p3k_phases_save(const p3k_phases *ph) {
+    mkdir("data", 0755);
+    FILE *f = fopen("data/p3k_phases.json.tmp", "wb");
+    if (!f) {
+        return;
+    }
+    fprintf(f,
+        "{\"syzygy_done\":%s,\"datagen_done\":%s,\"nnue_v4_done\":%s,\"spsa_done\":%s,\"distill_done\":%s}\n",
+        ph->syzygy_done ? "true" : "false", ph->datagen_done ? "true" : "false",
+        ph->nnue_v4_done ? "true" : "false", ph->spsa_done ? "true" : "false",
+        ph->distill_done ? "true" : "false");
+    fclose(f);
+    rename("data/p3k_phases.json.tmp", "data/p3k_phases.json");
+}
+
+static p3k_phases p3k_phases_load(void) {
+    p3k_phases ph;
+    memset(&ph, 0, sizeof(ph));
+    FILE *f = fopen("data/p3k_phases.json", "rb");
+    if (f) {
+        char buf[512];
+        size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+        buf[n] = '\0';
+        fclose(f);
+        ph.syzygy_done = (strstr(buf, "\"syzygy_done\":true") != NULL)
+                         || (strstr(buf, "\"syzygy_done\": true") != NULL);
+        ph.datagen_done = (strstr(buf, "\"datagen_done\":true") != NULL)
+                          || (strstr(buf, "\"datagen_done\": true") != NULL);
+        ph.nnue_v4_done = (strstr(buf, "\"nnue_v4_done\":true") != NULL)
+                          || (strstr(buf, "\"nnue_v4_done\": true") != NULL);
+        ph.spsa_done = (strstr(buf, "\"spsa_done\":true") != NULL)
+                       || (strstr(buf, "\"spsa_done\": true") != NULL);
+        ph.distill_done = (strstr(buf, "\"distill_done\":true") != NULL)
+                          || (strstr(buf, "\"distill_done\": true") != NULL);
+        return ph;
+    }
+    // First migration: auto-preserve completed disk artifacts without locking user's prior work!
+    struct stat dgst;
+    unsigned long long dg_pos = 0;
+    if (stat("data/datagen_v4.bin", &dgst) == 0 && dgst.st_size > 0) {
+        dg_pos = (unsigned long long) dgst.st_size / 36ull;
+    }
+    ph.syzygy_done = (syzygy_installed_pieces() >= 5);
+    ph.datagen_done = ph.syzygy_done && (dg_pos >= 1024ull);
+    ph.nnue_v4_done = ph.datagen_done && apex_v4_nnue_ready();
+    ph.spsa_done = ph.nnue_v4_done && (access("data/spsa_best.json", R_OK) == 0);
+    ph.distill_done = (access(HYBRID_UNLOCK_FLAG, R_OK) == 0)
+                      && (access(HYBRID_NNUE_FILE, R_OK) == 0);
+    p3k_phases_save(&ph);
+    return ph;
 }
 
 typedef struct {
@@ -332,9 +453,9 @@ static apex_progress_info apex_get_progress(const app_state *st) {
     if (ap.pure_pct > 100) {
         ap.pure_pct = 100;
     }
-    ap.pure_elo = 2580 + (ap.spsa_done ? 60 : 0) + (ap.nnue_v4_done ? 410 : 0);
+    ap.pure_elo = 2200 + (ap.nnue_v4_done ? 120 : 0) + (ap.spsa_done ? 80 : 0);
     if (ap.pure_stage >= 4) {
-        ap.pure_tier = "APEX 3000";
+        ap.pure_tier = "APEX FORGED";
     } else if (ap.nnue_v4_done) {
         ap.pure_tier = "v4 Awakened";
     } else if (ap.pure_stage == 3) {
@@ -354,11 +475,11 @@ static apex_progress_info apex_get_progress(const app_state *st) {
     if (ap.syz_pct > 100) {
         ap.syz_pct = 100;
     }
-    ap.syz_elo = 2580 + (ap.syzygy_done ? 70 : 0) + (ap.spsa_done ? 60 : 0) + (ap.nnue_v4_done ? 410 : 0);
+    ap.syz_elo = ap.pure_elo + (ap.syzygy_done ? 45 : 0);
     if (!ap.syzygy_done) {
         ap.syz_tier = "Sealed (Needs TB)";
     } else if (ap.syz_stage >= 5) {
-        ap.syz_tier = "GODMODE 3100";
+        ap.syz_tier = "APEX + 5-MAN TB";
     } else if (ap.nnue_v4_done) {
         ap.syz_tier = "v4 + TB Awakened";
     } else if (ap.syz_stage == 4) {
@@ -376,13 +497,29 @@ static bool is_apex_level(int lvl) {
     return lvl == APEX_PURE_LEVEL || lvl == APEX_SYZYGY_LEVEL;
 }
 
-static bool hybrid_is_unlocked(void) {
-    return (access(HYBRID_UNLOCK_FLAG, R_OK) == 0)
-           && (access("src/az/hybrid_uci_run.sh", X_OK) == 0);
+static bool az_v2_is_graduated(void) {
+    return access(HYBRID_UNLOCK_FLAG, R_OK) == 0;
 }
 
 static bool hybrid_nnue_is_unlocked(void) {
-    return hybrid_is_unlocked() && (access(HYBRID_NNUE_FILE, R_OK) == 0);
+    return (access(HYBRID_NNUE_FILE, R_OK) == 0)
+           && (access("src/az/hybrid_uci_run.sh", X_OK) == 0)
+           && (access("build/chess_uci", X_OK) == 0);
+}
+
+static bool tier2_is_complete(void) {
+    p3k_phases ph = p3k_phases_load();
+    return az_v2_is_graduated() && ph.distill_done && (access(HYBRID_NNUE_FILE, R_OK) == 0);
+}
+
+static bool forge_begun_on_disk(void) {
+    return tier2_is_complete() && (apex_compute_started() || syzygy_installed_pieces() >= 3);
+}
+
+static bool hybrid_is_unlocked(void) {
+    // Hybrids unlock as you begin Tier 3 (Apex Forge) after Tier 2 (Zero-C v2 + Singularity v5) is done!
+    return forge_begun_on_disk() && az_has_compute()
+           && (access("src/az/hybrid_uci_run.sh", X_OK) == 0) && (access("build/chess_uci", X_OK) == 0);
 }
 
 static bool hybrid_level_unlocked(int lvl) {
@@ -424,6 +561,11 @@ static bool az_v1_is_available(void) {
     return az_is_available() && (access(AZ_V1_CKPT_PATH, R_OK) == 0);
 }
 
+static bool az_toy_is_available(void) {
+    return az_is_available() && (access(AZ_TOY_CKPT_PATH, R_OK) == 0)
+           && (access("data/az_toy/replay.npz", R_OK) == 0);
+}
+
 static void az_check_alive(app_state *st) {
     if (st->az_running && st->az_pid > 0) {
         int status = 0;
@@ -455,6 +597,7 @@ static void az_check_alive(app_state *st) {
         if (r == st->spsa_pid || r < 0) {
             st->spsa_pid = 0;
             st->spsa_running = false;
+            st->apex_loaded_spsa = false;
         }
     }
     if (st->nnue_running && st->nnue_pid > 0) {
@@ -504,10 +647,15 @@ static void p3k_stop_child(pid_t *pid_p, bool *run_p) {
     }
 }
 
-static bool p3k_start_datagen(app_state *st, int threads, unsigned long long target_pos, int nodes) {
+static bool p3k_start_datagen(
+    app_state *st, int threads, unsigned long long target_pos, int nodes, const char *teacher) {
     az_check_alive(st);
     if (st->dg_running) {
         return true;
+    }
+    p3k_phases ph = p3k_phases_load();
+    if (!tier2_is_complete() || !ph.syzygy_done) {
+        return false;
     }
     if (access("build/datagen", X_OK) != 0) {
         return false;
@@ -522,6 +670,9 @@ static bool p3k_start_datagen(app_state *st, int threads, unsigned long long tar
     if (nodes < 1000) {
         nodes = 1000;
     }
+    if (nodes > 100000) {
+        nodes = 100000;
+    }
     if (target_pos < 10000ull) {
         target_pos = 10000ull;
     }
@@ -529,6 +680,18 @@ static bool p3k_start_datagen(app_state *st, int threads, unsigned long long tar
     snprintf(th_s, sizeof(th_s), "%d", threads);
     snprintf(pos_s, sizeof(pos_s), "%llu", target_pos);
     snprintf(nd_s, sizeof(nd_s), "%d", nodes);
+    const char *nnue_arg = NULL;
+    if (teacher && strcmp(teacher, "v4") == 0 && apex_v4_nnue_ready()) {
+        nnue_arg = NNUE_V4_FILE;
+    } else if (teacher && strcmp(teacher, "singularity") == 0 && hybrid_nnue_is_unlocked()) {
+        nnue_arg = HYBRID_NNUE_FILE;
+    } else if (teacher && strcmp(teacher, "auto") == 0) {
+        if (apex_v4_nnue_ready()) {
+            nnue_arg = NNUE_V4_FILE;
+        } else if (hybrid_nnue_is_unlocked()) {
+            nnue_arg = HYBRID_NNUE_FILE;
+        }
+    }
 
     pid_t pid = fork();
     if (pid < 0) {
@@ -547,15 +710,24 @@ static bool p3k_start_datagen(app_state *st, int threads, unsigned long long tar
             dup2(devnull, STDIN_FILENO);
             close(devnull);
         }
-        char *argv[] = {
-            "build/datagen",
-            "--threads", th_s,
-            "--positions", pos_s,
-            "--nodes", nd_s,
-            "--out", "data/datagen_v4.bin",
-            "--status", "data/p3k_datagen_status.json",
-            NULL,
-        };
+        char *argv[16];
+        int ai = 0;
+        argv[ai++] = "build/datagen";
+        argv[ai++] = "--threads";
+        argv[ai++] = th_s;
+        argv[ai++] = "--positions";
+        argv[ai++] = pos_s;
+        argv[ai++] = "--nodes";
+        argv[ai++] = nd_s;
+        argv[ai++] = "--out";
+        argv[ai++] = "data/datagen_v4.bin";
+        argv[ai++] = "--status";
+        argv[ai++] = "data/p3k_datagen_status.json";
+        if (nnue_arg) {
+            argv[ai++] = "--nnue";
+            argv[ai++] = (char *) nnue_arg;
+        }
+        argv[ai] = NULL;
         execvp("build/datagen", argv);
         _exit(127);
     }
@@ -568,6 +740,10 @@ static bool p3k_start_spsa(app_state *st, int threads, int iters, int nodes) {
     az_check_alive(st);
     if (st->spsa_running) {
         return true;
+    }
+    p3k_phases ph = p3k_phases_load();
+    if (!ph.nnue_v4_done) {
+        return false;
     }
     if (access("build/chess_uci", X_OK) != 0) {
         return false;
@@ -612,8 +788,9 @@ static bool p3k_start_spsa(app_state *st, int threads, int iters, int nodes) {
             "src/tools/spsa_tuner.py",
             "--threads", th_s,
             "--iters", it_s,
-            "--pairs-per-iter", "4",
+            "--pairs-per-iter", "6",
             "--nodes", nd_s,
+            "--nnue", apex_v4_nnue_ready() ? NNUE_V4_FILE : "",
             "--out", "data/spsa_best.json",
             "--status", "data/p3k_spsa_status.json",
             NULL,
@@ -630,6 +807,10 @@ static bool p3k_start_nnue(app_state *st, int epochs) {
     az_check_alive(st);
     if (st->nnue_running) {
         return true;
+    }
+    p3k_phases ph = p3k_phases_load();
+    if (!ph.datagen_done) {
+        return false;
     }
     if (access("data/datagen_v4.bin", R_OK) != 0) {
         return false;
@@ -683,6 +864,9 @@ static bool p3k_start_syzygy(app_state *st) {
     if (st->syz_running) {
         return true;
     }
+    if (!tier2_is_complete()) {
+        return false;
+    }
     if (access("scripts/download_syzygy5.sh", R_OK) != 0) {
         return false;
     }
@@ -723,6 +907,8 @@ static bool toy_start_training(app_state *st, const char *arch, bool reset) {
     }
     mkdir("data", 0755);
     mkdir("data/az_toy", 0755);
+    int cur_toy_gen = reset ? 0 : json_status_read_int("data/az_toy/status.json", "gen", 0);
+    bool cap_60 = reset || (cur_toy_gen < 60);
     char py[256];
     az_python_path(py, sizeof(py));
     pid_t pid = fork();
@@ -741,7 +927,7 @@ static bool toy_start_training(app_state *st, const char *arch, bool reset) {
             dup2(devnull, STDIN_FILENO);
             close(devnull);
         }
-        char *argv[24];
+        char *argv[28];
         int ai = 0;
         argv[ai++] = py;
         argv[ai++] = "src/az/trainer.py";
@@ -757,6 +943,10 @@ static bool toy_start_training(app_state *st, const char *arch, bool reset) {
         argv[ai++] = "64";
         argv[ai++] = "--replay-size";
         argv[ai++] = "200000";
+        if (cap_60) {
+            argv[ai++] = "--max-gens";
+            argv[ai++] = "60";
+        }
         argv[ai++] = "--data-dir";
         argv[ai++] = "data/az_toy";
         if (reset) {
@@ -777,7 +967,7 @@ static void append_raw_json_or_null(strbuf *sb, const char *path) {
         fseek(fp, 0, SEEK_END);
         long sz = ftell(fp);
         fseek(fp, 0, SEEK_SET);
-        if (sz > 2 && sz < 65536) {
+        if (sz > 2 && sz < 524288) {
             char *buf = (char *) malloc((size_t) sz + 1);
             if (buf) {
                 size_t n = fread(buf, 1, (size_t) sz, fp);
@@ -862,16 +1052,28 @@ static void handle_p3k_status_json(app_state *st, strbuf *sb) {
         st->dg_running ? "true" : "false", dg_file_pos,
         (double) dg_file_bytes / (1024.0 * 1024.0));
     append_raw_json_or_null(sb, "data/p3k_datagen_status.json");
+    sb_append(sb, ",\"history\":");
+    append_raw_json_or_null(sb, "data/p3k_datagen_history.json");
     sb_append(sb, "},");
 
     sb_printf(sb, "\"spsa\":{\"running\":%s,\"detail\":", st->spsa_running ? "true" : "false");
     append_raw_json_or_null(sb, "data/p3k_spsa_status.json");
     sb_append(sb, "},");
 
+    p3k_phases ph = p3k_phases_load();
+    bool t2_done = tier2_is_complete();
+    bool toy_done = (access("data/az_toy/v2_complete.flag", R_OK) == 0);
     sb_printf(sb, "\"nnue_v4\":{\"running\":%s,\"ready\":%s,\"detail\":",
         st->nnue_running ? "true" : "false", apex_v4_nnue_ready() ? "true" : "false");
     append_raw_json_or_null(sb, "data/p3k_nnue_status.json");
-    sb_append(sb, "}}");
+    sb_printf(sb,
+        "},\"tier2_done\":%s,\"forge_unlocked\":%s,\"toy_done\":%s,"
+        "\"phases\":{\"syzygy_done\":%s,\"datagen_done\":%s,\"nnue_v4_done\":%s,"
+        "\"spsa_done\":%s,\"distill_done\":%s,\"zeroc_done\":%s}}",
+        t2_done ? "true" : "false", t2_done ? "true" : "false", toy_done ? "true" : "false",
+        ph.syzygy_done ? "true" : "false", ph.datagen_done ? "true" : "false",
+        ph.nnue_v4_done ? "true" : "false", ph.spsa_done ? "true" : "false",
+        ph.distill_done ? "true" : "false", az_v2_is_graduated() ? "true" : "false");
 }
 
 static void distill_stop(app_state *st) {
@@ -901,8 +1103,10 @@ static bool distill_start(app_state *st) {
     if (st->distill_running) {
         return true;
     }
-    if (!hybrid_is_unlocked() || access("data/az/latest.pt", R_OK) != 0
-        || access("data/az/replay.npz", R_OK) != 0) {
+    if (!az_v2_is_graduated()) {
+        return false;
+    }
+    if (access("data/az/latest.pt", R_OK) != 0 || access("data/az/replay.npz", R_OK) != 0) {
         return false;
     }
     char py[256];
@@ -1031,6 +1235,9 @@ static void az_reset_files(app_state *st) {
     unlink("data/az/latest.pt");
     unlink("data/az/status.json");
     unlink("data/az/replay.npz");
+    unlink("data/az/v2_complete.flag");
+    unlink("data/az/trainer.log");
+    unlink("data/reports/zeroc_v2_report.json");
     DIR *d = opendir("data/az/checkpoints");
     if (d) {
         struct dirent *de;
@@ -1043,6 +1250,32 @@ static void az_reset_files(app_state *st) {
         }
         closedir(d);
     }
+}
+
+static void unlink_glob_dir(const char *dir_path, const char *suffix1, const char *suffix2) {
+    DIR *d = opendir(dir_path);
+    if (!d) {
+        return;
+    }
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        size_t len = strlen(de->d_name);
+        bool match = false;
+        if (suffix1 && len >= strlen(suffix1)
+            && strcmp(de->d_name + len - strlen(suffix1), suffix1) == 0) {
+            match = true;
+        }
+        if (suffix2 && len >= strlen(suffix2)
+            && strcmp(de->d_name + len - strlen(suffix2), suffix2) == 0) {
+            match = true;
+        }
+        if (match) {
+            char p[512];
+            snprintf(p, sizeof(p), "%s/%s", dir_path, de->d_name);
+            unlink(p);
+        }
+    }
+    closedir(d);
 }
 
 static uci_engine *az_ensure_uci(app_state *st) {
@@ -1078,6 +1311,21 @@ static uci_engine *az_ensure_v1_uci(app_state *st) {
     return st->az_v1_uci;
 }
 
+static uci_engine *az_ensure_toy_uci(app_state *st) {
+    if (!az_toy_is_available()) {
+        return NULL;
+    }
+    if (!st->az_toy_uci) {
+        st->az_toy_uci = uci_create("src/az/az_uci_run.sh");
+        if (st->az_toy_uci) {
+            uci_set_option(st->az_toy_uci, "Checkpoint", AZ_TOY_CKPT_PATH);
+            uci_set_option(st->az_toy_uci, "Simulations", "350");
+            uci_set_option(st->az_toy_uci, "TacticalHybrid", "true");
+        }
+    }
+    return st->az_toy_uci;
+}
+
 static uci_engine *hybrid_ensure_uci(app_state *st, int lvl) {
     if (!hybrid_level_unlocked(lvl)) {
         return NULL;
@@ -1103,6 +1351,7 @@ static uci_engine *apex_ensure_uci(app_state *st) {
     if (!st->apex_uci) {
         st->apex_uci = uci_create("build/chess_uci");
         st->apex_loaded_v4 = false;
+        st->apex_loaded_spsa = false;
         if (st->apex_uci) {
             uci_set_option(st->apex_uci, "Threads", "4");
             uci_set_option(st->apex_uci, "Hash", "128");
@@ -1111,6 +1360,10 @@ static uci_engine *apex_ensure_uci(app_state *st) {
     if (st->apex_uci && !st->apex_loaded_v4 && apex_v4_nnue_ready()) {
         uci_set_option(st->apex_uci, "EvalFile", NNUE_V4_FILE);
         st->apex_loaded_v4 = true;
+    }
+    if (st->apex_uci && !st->apex_loaded_spsa && access("data/spsa_best.json", R_OK) == 0) {
+        (void) uci_apply_spsa_file(st->apex_uci, "data/spsa_best.json");
+        st->apex_loaded_spsa = true;
     }
     return st->apex_uci;
 }
@@ -1181,10 +1434,11 @@ static void handle_az_status_json(app_state *st, strbuf *sb) {
                     sb_append_n(sb, buf, n);
                     sb_printf(sb,
                         ",\"proc_alive\":%s,\"lib_built\":%s,\"venv_ready\":%s,"
-                        "\"has_latest\":%s,\"hybrids_unlocked\":%s",
+                        "\"has_latest\":%s,\"hybrids_unlocked\":%s,\"v2_graduated\":%s",
                         st->az_running ? "true" : "false", lib_ok ? "true" : "false",
                         venv_ok ? "true" : "false", has_latest ? "true" : "false",
-                        hybrid_is_unlocked() ? "true" : "false");
+                        hybrid_is_unlocked() ? "true" : "false",
+                        az_v2_is_graduated() ? "true" : "false");
                     append_distill_status_field(st, sb);
                     sb_append(sb, "}");
                     free(buf);
@@ -1209,11 +1463,11 @@ static void handle_az_status_json(app_state *st, strbuf *sb) {
         "\"evals_per_sec\":0,\"games_per_hr\":0,\"elapsed_sec\":0,"
         "\"outcomes\":{\"white\":0,\"draw\":0,\"black\":0},\"history\":[],"
         "\"checkpoints\":[],\"live_games\":[],\"lib_built\":%s,\"venv_ready\":%s,"
-        "\"has_latest\":%s,\"hybrids_unlocked\":%s",
+        "\"has_latest\":%s,\"hybrids_unlocked\":%s,\"v2_graduated\":%s",
         st->az_running ? "true" : "false", st->az_running ? "true" : "false",
         venv_ok ? "RTX GPU (PyTorch CUDA ready)" : "Run 'make az-setup' for PyTorch CUDA",
         lib_ok ? "true" : "false", venv_ok ? "true" : "false", has_latest ? "true" : "false",
-        hybrid_is_unlocked() ? "true" : "false");
+        hybrid_is_unlocked() ? "true" : "false", az_v2_is_graduated() ? "true" : "false");
     append_distill_status_field(st, sb);
     sb_append(sb, "}");
 }
@@ -1235,6 +1489,8 @@ static void format_bot_name(const app_state *st, int level, char *out, size_t ou
         snprintf(out, out_size, "Singularity v5 (Zero-NNUE)");
     } else if (level == AZ_V1_BOT_LEVEL) {
         snprintf(out, out_size, "Zero-C v1 Champion (Gen 4320)");
+    } else if (level == AZ_TOY_BOT_LEVEL) {
+        snprintf(out, out_size, "Zero-C Lite (Toy Net)");
     } else if (level == AZ_BOT_LEVEL) {
         if (st->az_checkpoint[0] != '\0') {
             const char *base = strrchr(st->az_checkpoint, '/');
@@ -1634,17 +1890,24 @@ static void serialize_state_json(
     sb_printf(sb, ",\"cpu_cores\":%d,\"gauntlet_running\":%s,\"presets\":[", gs.cpu_cores,
         gs.running ? "true" : "false");
     int np = engine_num_presets();
+    int titan6_elo = 2350;
     for (int i = 1; i <= np; i++) {
         const difficulty_preset *pr = engine_get_preset(i);
         const level_progress *lp = &gs.levels[i - 1];
+        if (i == 6 && lp->has_elo && !lp->is_relative && lp->est_elo > 0) {
+            titan6_elo = lp->est_elo;
+        }
+        static const int c_fallback[7] = { 0, 650, 1150, 1450, 1800, 2150, 2350 };
+        bool cal = lp->has_elo && !lp->is_relative && lp->est_elo > 0;
+        int e_elo = cal ? lp->est_elo : (lp->has_elo ? lp->est_elo : c_fallback[(i >= 1 && i <= 6) ? i : 4]);
         if (i > 1) {
             sb_append(sb, ",");
         }
         sb_printf(sb,
-            "{\"level\":%d,\"engine\":\"c\",\"available\":true,\"has_elo\":%s,\"is_relative\":%s,"
-            "\"est_elo\":%d,\"name\":",
-            pr->level, lp->has_elo ? "true" : "false", lp->is_relative ? "true" : "false",
-            lp->est_elo);
+            "{\"level\":%d,\"engine\":\"c\",\"available\":true,\"has_elo\":%s,\"calibrated\":%s,"
+            "\"calibrated_elo\":%d,\"calib_games\":%d,\"is_relative\":%s,\"est_elo\":%d,\"name\":",
+            pr->level, lp->has_elo ? "true" : "false", cal ? "true" : "false",
+            cal ? lp->est_elo : 0, lp->done_games, lp->is_relative ? "true" : "false", e_elo);
         sb_json_str(sb, pr->name);
         sb_append(sb, ",\"desc\":");
         sb_json_str(sb, pr->desc);
@@ -1655,74 +1918,170 @@ static void serialize_state_json(
         const sf_preset *sp = uci_get_preset(uci_first_level() + i);
         sb_printf(sb,
             ",{\"level\":%d,\"engine\":\"stockfish\",\"available\":%s,\"has_elo\":true,"
-            "\"is_relative\":false,\"est_elo\":%d,\"name\":",
+            "\"calibrated\":true,\"is_relative\":false,\"est_elo\":%d,\"name\":",
             sp->level, st->sf ? "true" : "false", sp->limit_strength ? sp->elo : 3500);
         sb_json_str(sb, sp->name);
         sb_append(sb, ",\"desc\":");
         sb_json_str(sb, sp->desc);
         sb_append(sb, "}");
     }
-    const level_progress *az_lp = &gs.levels[GAUNTLET_ZERO_C_LEVEL - 1];
+    int az_est = az_live_est_elo();
+    int az_s = gauntlet_level_to_slot(GAUNTLET_ZERO_C_LEVEL);
+    const level_progress *az_lp = (az_s >= 0) ? &gs.levels[az_s] : &gs.levels[6];
+    bool az2_has_ckpt = az_has_compute();
+    bool az2_grad = az_v2_is_graduated();
+    bool az2_cal = az_lp->has_elo && !az_lp->is_relative && az_lp->est_elo > 0;
     sb_printf(sb,
-        ",{\"level\":%d,\"engine\":\"az\",\"available\":%s,\"has_elo\":%s,"
-        "\"is_relative\":%s,\"est_elo\":%d,\"name\":\"Zero-C v2 (Latest)\","
-        "\"desc\":\"Active Zero-C AlphaZero self-play MCTS + SE-ResNet neural engine\"}",
-        AZ_BOT_LEVEL, az_is_available() ? "true" : "false", az_lp->has_elo ? "true" : "false",
-        az_lp->is_relative ? "true" : "false", az_lp->est_elo);
+        ",{\"level\":%d,\"engine\":\"az\",\"available\":%s,\"locked\":%s,\"partial\":%s,\"has_elo\":true,"
+        "\"calibrated\":%s,\"calibrated_elo\":%d,\"calib_games\":%d,\"is_relative\":%s,\"est_elo\":%d,"
+        "\"name\":\"Zero-C v2 (AlphaZero)\","
+        "\"desc\":\"Pure tabula-rasa 10x128 SE-ResNet self-play neural net (%s)\"}",
+        AZ_BOT_LEVEL, (az_is_available() && az2_has_ckpt) ? "true" : "false",
+        az2_has_ckpt ? "false" : "true", (az2_has_ckpt && !az2_grad) ? "true" : "false",
+        az2_cal ? "true" : "false", az2_cal ? az_lp->est_elo : 0, az_lp->done_games,
+        az_lp->is_relative ? "true" : "false", az2_cal ? az_lp->est_elo : az_est,
+        az2_grad ? "Graduated Tier-2 Champion" : (az2_has_ckpt ? "Partially trained — plays at current Gen!" : "Start Zero-C v2 GPU Training (Tier 2) to unlock"));
+
+    int v1_s = gauntlet_level_to_slot(AZ_V1_BOT_LEVEL);
+    const level_progress *v1_lp = (v1_s >= 0) ? &gs.levels[v1_s] : NULL;
+    bool v1_cal = v1_lp && v1_lp->has_elo && !v1_lp->is_relative && v1_lp->est_elo > 0;
     sb_printf(sb,
-        ",{\"level\":%d,\"engine\":\"az\",\"available\":%s,\"has_elo\":true,"
-        "\"is_relative\":false,\"est_elo\":1276,\"name\":\"Zero-C v1 Champion (Gen 4320 • Max)\","
-        "\"desc\":\"Immortalized v1 6x96 SE-ResNet (554k self-play games, 1000-sim Hybrid MCTS)\"}",
-        AZ_V1_BOT_LEVEL, az_v1_is_available() ? "true" : "false");
+        ",{\"level\":%d,\"engine\":\"az\",\"available\":%s,\"locked\":%s,\"has_elo\":true,"
+        "\"calibrated\":%s,\"calibrated_elo\":%d,\"calib_games\":%d,\"is_relative\":false,\"est_elo\":%d,"
+        "\"name\":\"Zero-C v1 Champion (Gen 4320)\","
+        "\"desc\":\"Archived v1 6x96 SE-ResNet (554k self-play games, 1000-sim Hybrid MCTS)\"}",
+        AZ_V1_BOT_LEVEL, az_v1_is_available() ? "true" : "false",
+        az_v1_is_available() ? "false" : "true",
+        v1_cal ? "true" : "false", v1_cal ? v1_lp->est_elo : 1276, v1_lp ? v1_lp->done_games : 0,
+        v1_cal ? v1_lp->est_elo : 1276);
+
+    int toy_s = gauntlet_level_to_slot(AZ_TOY_BOT_LEVEL);
+    const level_progress *toy_lp = (toy_s >= 0) ? &gs.levels[toy_s] : NULL;
+    bool toy_ok = az_toy_is_available();
+    bool toy_done = (access("data/az_toy/v2_complete.flag", R_OK) == 0);
+    bool toy_cal = toy_lp && toy_lp->has_elo && !toy_lp->is_relative && toy_lp->est_elo > 0;
+    int toy_est = toy_live_est_elo();
+    sb_printf(sb,
+        ",{\"level\":%d,\"engine\":\"az\",\"available\":%s,\"locked\":%s,\"partial\":%s,\"has_elo\":true,"
+        "\"calibrated\":%s,\"calibrated_elo\":%d,\"calib_games\":%d,\"is_relative\":false,\"est_elo\":%d,"
+        "\"name\":\"Zero-C Lite (Toy Net)\","
+        "\"desc\":\"15-min Tiny/Standard AlphaZero sandbox net isolated in data/az_toy/\"}",
+        AZ_TOY_BOT_LEVEL, toy_ok ? "true" : "false", toy_ok ? "false" : "true",
+        (toy_ok && !toy_done) ? "true" : "false",
+        toy_cal ? "true" : "false", toy_cal ? toy_lp->est_elo : 0, toy_lp ? toy_lp->done_games : 0,
+        toy_cal ? toy_lp->est_elo : toy_est);
+
+    bool t2_done = tier2_is_complete();
+    bool forge_begun = forge_begun_on_disk();
     bool hyb_ok = hybrid_is_unlocked();
     bool nnue_ok = hybrid_nnue_is_unlocked();
+    p3k_phases ph_st = p3k_phases_load();
+    int d_s = gauntlet_level_to_slot(HYBRID_DUAL_LEVEL);
+    int l_s = gauntlet_level_to_slot(HYBRID_LMR_LEVEL);
+    int o_s = gauntlet_level_to_slot(HYBRID_OMEGA_LEVEL);
+    int n_s = gauntlet_level_to_slot(HYBRID_NNUE_LEVEL);
+    const level_progress *d_lp = (d_s >= 0) ? &gs.levels[d_s] : NULL;
+    const level_progress *l_lp = (l_s >= 0) ? &gs.levels[l_s] : NULL;
+    const level_progress *o_lp = (o_s >= 0) ? &gs.levels[o_s] : NULL;
+    const level_progress *n_lp = (n_s >= 0) ? &gs.levels[n_s] : NULL;
+    bool d_cal = d_lp && d_lp->has_elo && !d_lp->is_relative && d_lp->est_elo > 0;
+    bool l_cal = l_lp && l_lp->has_elo && !l_lp->is_relative && l_lp->est_elo > 0;
+    bool o_cal = o_lp && o_lp->has_elo && !o_lp->is_relative && o_lp->est_elo > 0;
+    bool n_cal = n_lp && n_lp->has_elo && !n_lp->is_relative && n_lp->est_elo > 0;
+    int sing_est = az_est + 450;
+    if (sing_est < 1700) {
+        sing_est = 1700;
+    }
+    int dual_est = titan6_elo + 35;
+    int lmr_est = titan6_elo + 55;
+    int omega_est = az_est + 280;
+    bool ap_all_done = t2_done && ph_st.syzygy_done && ph_st.datagen_done && ph_st.nnue_v4_done && ph_st.spsa_done;
     sb_printf(sb,
-        ",{\"level\":%d,\"engine\":\"hybrid\",\"available\":%s,\"locked\":%s,\"has_elo\":false,"
-        "\"is_relative\":false,\"est_elo\":2660,\"name\":\"Gemini Arbiter (Dual-Brain)\","
-        "\"desc\":\"Parallel CPU Titan-C L6 Multi-PV + GPU Zero-C v2 positional tie-breaker\"}",
-        HYBRID_DUAL_LEVEL, hyb_ok ? "true" : "false", hyb_ok ? "false" : "true");
+        ",{\"level\":%d,\"engine\":\"hybrid\",\"available\":%s,\"locked\":%s,\"partial\":%s,\"has_elo\":true,"
+        "\"calibrated\":%s,\"calibrated_elo\":%d,\"calib_games\":%d,\"is_relative\":false,\"est_elo\":%d,"
+        "\"name\":\"Gemini Arbiter (Dual-Brain)\","
+        "\"desc\":\"Parallel CPU Titan-C Multi-PV + GPU Zero-C v2 positional tie-breaker (%s)\"}",
+        HYBRID_DUAL_LEVEL, hyb_ok ? "true" : "false", hyb_ok ? "false" : "true",
+        (hyb_ok && !ap_all_done) ? "true" : "false",
+        d_cal ? "true" : "false", d_cal ? d_lp->est_elo : 0, d_lp ? d_lp->done_games : 0,
+        d_cal ? d_lp->est_elo : dual_est,
+        hyb_ok ? "Tier 3 Hybrid Unlocked!" : "Unlocks when Tier 2 finishes & you begin Tier 3 Apex Forge");
     sb_printf(sb,
-        ",{\"level\":%d,\"engine\":\"hybrid\",\"available\":%s,\"locked\":%s,\"has_elo\":false,"
-        "\"is_relative\":false,\"est_elo\":2700,\"name\":\"Oracle of LMR (Neural Search)\","
-        "\"desc\":\"Zero-C v2 policy-guided move ordering & LMR inside Titan-C 800k-NPS search\"}",
-        HYBRID_LMR_LEVEL, hyb_ok ? "true" : "false", hyb_ok ? "false" : "true");
+        ",{\"level\":%d,\"engine\":\"hybrid\",\"available\":%s,\"locked\":%s,\"partial\":%s,\"has_elo\":true,"
+        "\"calibrated\":%s,\"calibrated_elo\":%d,\"calib_games\":%d,\"is_relative\":false,\"est_elo\":%d,"
+        "\"name\":\"Oracle of LMR (Neural Search)\","
+        "\"desc\":\"Zero-C v2 policy-guided move ordering inside Titan-C 800k-NPS search (%s)\"}",
+        HYBRID_LMR_LEVEL, hyb_ok ? "true" : "false", hyb_ok ? "false" : "true",
+        (hyb_ok && !ap_all_done) ? "true" : "false",
+        l_cal ? "true" : "false", l_cal ? l_lp->est_elo : 0, l_lp ? l_lp->done_games : 0,
+        l_cal ? l_lp->est_elo : lmr_est,
+        hyb_ok ? "Tier 3 Hybrid Unlocked!" : "Unlocks when Tier 2 finishes & you begin Tier 3 Apex Forge");
     sb_printf(sb,
-        ",{\"level\":%d,\"engine\":\"hybrid\",\"available\":%s,\"locked\":%s,\"has_elo\":false,"
-        "\"is_relative\":false,\"est_elo\":2300,\"name\":\"Zero-C Omega (Tactical MCTS)\","
-        "\"desc\":\"Zero-C v2 10x128 MCTS armed with Titan-C's tactical refutation verifier\"}",
-        HYBRID_OMEGA_LEVEL, hyb_ok ? "true" : "false", hyb_ok ? "false" : "true");
+        ",{\"level\":%d,\"engine\":\"hybrid\",\"available\":%s,\"locked\":%s,\"partial\":%s,\"has_elo\":true,"
+        "\"calibrated\":%s,\"calibrated_elo\":%d,\"calib_games\":%d,\"is_relative\":false,\"est_elo\":%d,"
+        "\"name\":\"Zero-C Omega (Tactical MCTS)\","
+        "\"desc\":\"Zero-C v2 MCTS guarded by Titan-C's tactical refutation verifier (%s)\"}",
+        HYBRID_OMEGA_LEVEL, hyb_ok ? "true" : "false", hyb_ok ? "false" : "true",
+        (hyb_ok && !ap_all_done) ? "true" : "false",
+        o_cal ? "true" : "false", o_cal ? o_lp->est_elo : 0, o_lp ? o_lp->done_games : 0,
+        o_cal ? o_lp->est_elo : omega_est,
+        hyb_ok ? "Tier 3 Hybrid Unlocked!" : "Unlocks when Tier 2 finishes & you begin Tier 3 Apex Forge");
     sb_printf(sb,
         ",{\"level\":%d,\"engine\":\"hybrid\",\"available\":%s,\"locked\":%s,\"needs_distill\":%s,"
-        "\"has_elo\":false,\"is_relative\":false,\"est_elo\":2800,\"name\":\"Singularity v5 (Zero-NNUE)\","
-        "\"desc\":\"Requires Knowledge Distillation: compresses Zero-C v2 into 200ns AVX2 NNUE v4\"}",
+        "\"partial\":%s,\"has_elo\":true,\"calibrated\":%s,\"calibrated_elo\":%d,\"calib_games\":%d,"
+        "\"is_relative\":false,\"est_elo\":%d,\"name\":\"Singularity v5 (Zero-NNUE)\","
+        "\"desc\":\"Zero-C Neural Guild Capstone: compresses Zero-C v2 into 200ns AVX2 CPU NNUE\"}",
         HYBRID_NNUE_LEVEL, nnue_ok ? "true" : "false", nnue_ok ? "false" : "true",
-        nnue_ok ? "false" : "true");
+        nnue_ok ? "false" : "true", (nnue_ok && !ph_st.distill_done) ? "true" : "false",
+        n_cal ? "true" : "false", n_cal ? n_lp->est_elo : 0, n_lp ? n_lp->done_games : 0,
+        n_cal ? n_lp->est_elo : sing_est);
+
+    int ap_s = gauntlet_level_to_slot(APEX_PURE_LEVEL);
+    int as_s = gauntlet_level_to_slot(APEX_SYZYGY_LEVEL);
+    const level_progress *ap_lp = (ap_s >= 0) ? &gs.levels[ap_s] : NULL;
+    const level_progress *as_lp = (as_s >= 0) ? &gs.levels[as_s] : NULL;
     apex_progress_info ap = apex_get_progress(st);
+    bool ap_unlocked = forge_begun && apex_compute_started();
+    bool as_unlocked = ap_unlocked && ap.syzygy_done;
+    bool ap_cal = ap_lp && ap_lp->has_elo && !ap_lp->is_relative && ap_lp->est_elo > 0;
+    bool as_cal = as_lp && as_lp->has_elo && !as_lp->is_relative && as_lp->est_elo > 0;
     sb_printf(sb,
-        ",{\"level\":%d,\"engine\":\"apex\",\"available\":true,\"locked\":false,\"has_v4_nnue\":%s,"
+        ",{\"level\":%d,\"engine\":\"apex\",\"available\":%s,\"locked\":%s,\"partial\":%s,\"has_v4_nnue\":%s,"
         "\"apex_stage\":%d,\"apex_max_stage\":%d,\"apex_pct\":%d,\"apex_tier\":\"%s\","
         "\"apex_tasks\":{\"search\":true,\"datagen\":%s,\"datagen_pos\":%llu,\"spsa\":%s,\"nnue_v4\":%s},"
-        "\"has_elo\":true,\"is_relative\":false,\"est_elo\":%d,\"name\":\"Apex-C [Lv %d/%d • %s]\","
-        "\"desc\":\"Dynamic Project 3000 Pure C11 Engine (%d/%d forge tasks complete): Full CorrHist + Capture/Cut LMR + %s\"}",
-        APEX_PURE_LEVEL, ap.nnue_v4_done ? "true" : "false", ap.pure_stage, ap.pure_max, ap.pure_pct,
-        ap.pure_tier, ap.datagen_done ? "true" : "false", ap.datagen_pos,
-        ap.spsa_done ? "true" : "false", ap.nnue_v4_done ? "true" : "false", ap.pure_elo,
+        "\"has_elo\":true,\"calibrated\":%s,\"calibrated_elo\":%d,\"calib_games\":%d,"
+        "\"is_relative\":false,\"est_elo\":%d,\"name\":\"Apex-C [Lv %d/%d • %s]\","
+        "\"desc\":\"Tier 3 Classical+NNUE v4 Engine (%d/%d tasks): %s\"}",
+        APEX_PURE_LEVEL, ap_unlocked ? "true" : "false", ap_unlocked ? "false" : "true",
+        (ap_unlocked && !ap_all_done) ? "true" : "false", ap.nnue_v4_done ? "true" : "false",
+        ap.pure_stage, ap.pure_max, ap.pure_pct, ap.pure_tier,
+        ap.datagen_done ? "true" : "false", ap.datagen_pos,
+        ap.spsa_done ? "true" : "false", ap.nnue_v4_done ? "true" : "false",
+        ap_cal ? "true" : "false", ap_cal ? ap_lp->est_elo : 0, ap_lp ? ap_lp->done_games : 0,
+        ap_cal ? ap_lp->est_elo : ap.pure_elo,
         ap.pure_stage, ap.pure_max, ap.pure_tier, ap.pure_stage, ap.pure_max,
-        ap.nnue_v4_done ? "16x768->1024 Big NNUE v4" : "v3 NNUE Prototype (complete Forge tasks to evolve!)");
+        ap_unlocked ? (ap.nnue_v4_done ? "16x768->1024 Big NNUE v4 active" : "Partial compute (train Step 3 for 1024 v4!)")
+                    : (t2_done ? "Locked — Start Tier 3 Datagen to unlock!" : "Locked — Complete Tier 2 (Zero-C v2 + Singularity v5) first!"));
     sb_printf(sb,
-        ",{\"level\":%d,\"engine\":\"apex\",\"available\":%s,\"locked\":%s,\"needs_syzygy\":%s,"
+        ",{\"level\":%d,\"engine\":\"apex\",\"available\":%s,\"locked\":%s,\"partial\":%s,\"needs_syzygy\":%s,"
         "\"syzygy_pieces\":%d,\"has_v4_nnue\":%s,"
         "\"apex_stage\":%d,\"apex_max_stage\":%d,\"apex_pct\":%d,\"apex_tier\":\"%s\","
         "\"apex_tasks\":{\"search\":true,\"syzygy\":%s,\"datagen\":%s,\"datagen_pos\":%llu,\"spsa\":%s,\"nnue_v4\":%s},"
-        "\"has_elo\":true,\"is_relative\":false,\"est_elo\":%d,\"name\":\"Apex-C + Syzygy [Lv %d/%d • %s]\","
-        "\"desc\":\"Dynamic Project 3000 + 5-Piece Syzygy (%d/%d forge tasks complete): %s\"}",
-        APEX_SYZYGY_LEVEL, ap.syzygy_done ? "true" : "false", ap.syzygy_done ? "false" : "true",
+        "\"has_elo\":true,\"calibrated\":%s,\"calibrated_elo\":%d,\"calib_games\":%d,"
+        "\"is_relative\":false,\"est_elo\":%d,\"name\":\"Apex-C + Syzygy [Lv %d/%d • %s]\","
+        "\"desc\":\"Tier 3 Engine + 5-Piece Syzygy (%d/%d tasks): %s\"}",
+        APEX_SYZYGY_LEVEL, as_unlocked ? "true" : "false", as_unlocked ? "false" : "true",
+        (as_unlocked && !ap_all_done) ? "true" : "false",
         ap.syzygy_done ? "false" : "true", ap.syzygy_pieces, ap.nnue_v4_done ? "true" : "false",
         ap.syz_stage, ap.syz_max, ap.syz_pct, ap.syz_tier, ap.syzygy_done ? "true" : "false",
         ap.datagen_done ? "true" : "false", ap.datagen_pos, ap.spsa_done ? "true" : "false",
-        ap.nnue_v4_done ? "true" : "false", ap.syz_elo, ap.syz_stage, ap.syz_max, ap.syz_tier,
+        ap.nnue_v4_done ? "true" : "false",
+        as_cal ? "true" : "false", as_cal ? as_lp->est_elo : 0, as_lp ? as_lp->done_games : 0,
+        as_cal ? as_lp->est_elo : ap.syz_elo,
+        ap.syz_stage, ap.syz_max, ap.syz_tier,
         ap.syz_stage, ap.syz_max,
-        ap.nnue_v4_done ? "1024 NNUE v4 + 5-Man Syzygy Perfection" : "5-Man Syzygy + v3 NNUE Prototype (complete Forge tasks to evolve!)");
+        as_unlocked ? (ap.nnue_v4_done ? "1024 NNUE v4 + 5-Man Syzygy Perfection" : "5-Man Syzygy + Partial Forge")
+                    : (t2_done ? "Locked — Requires Tier 3 Syzygy & Datagen!" : "Locked — Complete Tier 2 (Zero-C v2 + Singularity v5) first!"));
     sb_append(sb, "],\"opening\":");
     sb_json_str(sb, (st->mode == WMODE_PUZZLE)
                         ? "Tactical Puzzle"
@@ -1776,8 +2135,9 @@ static void serialize_gauntlet_json(const gauntlet_status *gs, strbuf *sb) {
     sb_append(sb, ",\"levels\":[");
     for (int i = 0; i < GAUNTLET_NUM_LEVELS; i++) {
         const level_progress *lp = &gs->levels[i];
-        const char *lname = gauntlet_level_name(i + 1);
-        const char *eng_tag = (i + 1 == GAUNTLET_ZERO_C_LEVEL) ? "az" : "c";
+        int lvl = (lp->level > 0) ? lp->level : gauntlet_slot_to_level(i);
+        const char *lname = gauntlet_level_name(lvl);
+        const char *eng_tag = gauntlet_level_engine(lvl);
         const char *st_str
             = (lp->state == 1)
                   ? "running"
@@ -1785,7 +2145,7 @@ static void serialize_gauntlet_json(const gauntlet_status *gs, strbuf *sb) {
         if (i > 0) {
             sb_append(sb, ",");
         }
-        sb_printf(sb, "{\"level\":%d,\"engine\":\"%s\",\"name\":", lp->level, eng_tag);
+        sb_printf(sb, "{\"level\":%d,\"engine\":\"%s\",\"name\":", lvl, eng_tag);
         sb_json_str(sb, lname);
         sb_printf(sb, ",\"state\":\"%s\",\"opponent\":", st_str);
         sb_json_str(sb, lp->opponent_label);
@@ -1803,10 +2163,11 @@ static void serialize_gauntlet_json(const gauntlet_status *gs, strbuf *sb) {
     sb_printf(sb,
         ",\"target_ci\":%d,\"max_games\":%d,\"games_done\":%d,\"wins\":%d,\"draws\":%d,"
         "\"losses\":%d,\"current_anchor\":%d,\"est_elo\":%d,\"ci_half\":%d,\"ci_low\":%d,"
-        "\"ci_high\":%d,\"converged\":%s,\"hit_sf_floor\":%s,\"buckets\":[",
+        "\"ci_high\":%d,\"converged\":%s,\"hit_sf_floor\":%s,\"sf_min_elo\":%d,\"sf_max_elo\":%d,\"buckets\":[",
         cs->target_ci, cs->max_games, cs->games_done, cs->wins, cs->draws, cs->losses,
         cs->current_anchor, cs->est_elo, cs->ci_half, cs->ci_low, cs->ci_high,
-        cs->converged ? "true" : "false", cs->hit_sf_floor ? "true" : "false");
+        cs->converged ? "true" : "false", cs->hit_sf_floor ? "true" : "false",
+        cs->sf_min_elo > 0 ? cs->sf_min_elo : 1350, cs->sf_max_elo > 0 ? cs->sf_max_elo : 2850);
     for (int i = 0; i < cs->num_buckets; i++) {
         if (i > 0) {
             sb_append(sb, ",");
@@ -2633,9 +2994,23 @@ static void handle_client(int fd, app_state *st) {
         send_http(fd, "200 OK", "application/json", sb.data, sb.len);
     } else if (strcmp(method, "GET") == 0 && strcmp(path, "/api/pgn") == 0) {
         char pgn[65536];
+        int saved_ply = (int) st->game->move_count;
+        if (st->mainline_len > 0) {
+            goto_ply(st, st->mainline_len);
+        }
         static_get_pgn(st->game, st->white_name, st->black_name, pgn, sizeof(pgn));
-        sb_append(&sb, "{\"ok\":true,\"pgn\":");
+        int export_plies = (int) st->game->move_count;
+        if (st->mainline_len > 0 && saved_ply != export_plies) {
+            goto_ply(st, saved_ply);
+        }
+        sb_printf(&sb, "{\"ok\":true,\"plies\":%d,\"has_moves\":%s,\"pgn\":", export_plies,
+            export_plies > 0 ? "true" : "false");
         sb_json_str(&sb, pgn);
+        if (export_plies == 0 && st->hist.count > 0 && st->hist.entries[0].pgn
+            && st->hist.entries[0].pgn[0] != '\0') {
+            sb_append(&sb, ",\"last_game_pgn\":");
+            sb_json_str(&sb, st->hist.entries[0].pgn);
+        }
         sb_append(&sb, "}");
         send_http(fd, "200 OK", "application/json", sb.data, sb.len);
     } else if (strcmp(method, "POST") == 0 && strcmp(path, "/api/new") == 0) {
@@ -2905,6 +3280,26 @@ static void handle_client(int fd, app_state *st) {
                 }
             }
             sr = ur.base;
+        } else if (lvl == AZ_TOY_BOT_LEVEL) {
+            uci_engine *azt = az_ensure_toy_uci(st);
+            if (!azt) {
+                sb_append(&sb,
+                    "{\"ok\":false,\"error\":\"Toy Net checkpoint not found yet at "
+                    "data/az_toy/latest.pt — start a Quick Toy Net sprint first!\"}");
+                send_http(fd, "200 OK", "application/json", sb.data, sb.len);
+                sb_free(&sb);
+                return;
+            }
+            format_bot_name(st, lvl, bot_label, sizeof(bot_label));
+            uci_search_result ur = uci_search(azt, st->game, false, 0, 1200);
+            if (ur.base.nodes == 0) {
+                uci_delete(&st->az_toy_uci);
+                azt = az_ensure_toy_uci(st);
+                if (azt) {
+                    ur = uci_search(azt, st->game, false, 0, 1200);
+                }
+            }
+            sr = ur.base;
         } else if (lvl == AZ_BOT_LEVEL) {
             uci_engine *az = az_ensure_uci(st);
             if (!az) {
@@ -3093,21 +3488,29 @@ static void handle_client(int fd, app_state *st) {
     } else if (strcmp(method, "POST") == 0 && strcmp(path, "/api/az/complete") == 0) {
         bool unlock = (strstr(body, "\"unlock\":false") == NULL)
                       && (strstr(body, "\"unlock\": false") == NULL);
-        if (unlock) {
-            FILE *ff = fopen(HYBRID_UNLOCK_FLAG, "wb");
-            if (ff) {
-                fprintf(ff, "{\"completed_at\":\"manual\",\"reason\":\"Graduated via Mission Control\"}\n");
-                fclose(ff);
-            }
+        if (unlock && !az_has_compute()) {
+            sb_append(&sb,
+                "{\"ok\":false,\"error\":\"Train at least 1 generation of Zero-C v2 before marking Phase 1 complete.\"}");
         } else {
-            remove(HYBRID_UNLOCK_FLAG);
-            uci_delete(&st->hybrid_uci);
-            st->hybrid_last_mode[0] = '\0';
+            if (unlock) {
+                FILE *ff = fopen(HYBRID_UNLOCK_FLAG, "wb");
+                if (ff) {
+                    fprintf(ff, "{\"completed_at\":\"manual\",\"reason\":\"Graduated via Mission Control\"}\n");
+                    fclose(ff);
+                }
+            } else {
+                remove(HYBRID_UNLOCK_FLAG);
+                uci_delete(&st->hybrid_uci);
+                st->hybrid_last_mode[0] = '\0';
+            }
+            handle_az_status_json(st, &sb);
         }
-        handle_az_status_json(st, &sb);
         send_http(fd, "200 OK", "application/json", sb.data, sb.len);
     } else if (strcmp(method, "POST") == 0 && strcmp(path, "/api/az/distill") == 0) {
-        if (st->az_running) {
+        if (!az_v2_is_graduated()) {
+            sb_append(&sb,
+                "{\"ok\":false,\"error\":\"Mark Track B Phase 1 (Zero-C v2) as Complete before launching Distillation.\"}");
+        } else if (st->az_running) {
             sb_append(&sb,
                 "{\"ok\":false,\"error\":\"Pause Zero-C self-play training first so Distillation "
                 "has full RTX GPU & replay.npz access.\"}");
@@ -3130,14 +3533,95 @@ static void handle_client(int fd, app_state *st) {
         int threads = json_get_int(body, "threads", 2);
         int pos_m = json_get_int(body, "millions", 25);
         int nodes = json_get_int(body, "nodes", 5000);
+        char teacher[32] = "auto";
+        json_get_string(body, "teacher", teacher, sizeof(teacher));
+        bool use_v4 = (strstr(body, "\"use_v4\":true") != NULL)
+                      || (strstr(body, "\"use_v4\": true") != NULL);
+        if (strcmp(teacher, "auto") == 0 && !use_v4 && strstr(body, "\"use_v4\":false") != NULL) {
+            snprintf(teacher, sizeof(teacher), "v3");
+        }
         unsigned long long target_pos
             = (unsigned long long) ((pos_m < 1) ? 1 : pos_m) * 1000000ull;
-        if (!p3k_start_datagen(st, threads, target_pos, nodes)) {
+        p3k_phases ph_chk = p3k_phases_load();
+        if (!tier2_is_complete()) {
+            sb_append(&sb,
+                "{\"ok\":false,\"error\":\"Tier 3 Locked: Complete & mark Zero-C v2 AND Singularity v5 Distillation in Tier 2 first!\"}");
+        } else if (!ph_chk.syzygy_done) {
+            sb_append(&sb,
+                "{\"ok\":false,\"error\":\"Mark Step 1 (Syzygy Tablebases) Complete before starting Self-Play Datagen.\"}");
+        } else if (!p3k_start_datagen(st, threads, target_pos, nodes, teacher)) {
             sb_append(&sb,
                 "{\"ok\":false,\"error\":\"build/datagen not found — run 'make datagen' first.\"}");
         } else {
             handle_p3k_status_json(st, &sb);
         }
+        send_http(fd, "200 OK", "application/json", sb.data, sb.len);
+    } else if (strcmp(method, "GET") == 0 && strcmp(path, "/api/p3k/datagen/stats") == 0) {
+        sb_append(&sb, "{\"ok\":true,\"stats\":");
+        append_raw_json_or_null(&sb, "data/p3k_datagen_stats.json");
+        sb_append(&sb, ",\"history\":");
+        append_raw_json_or_null(&sb, "data/p3k_datagen_history.json");
+        sb_append(&sb, "}");
+        send_http(fd, "200 OK", "application/json", sb.data, sb.len);
+    } else if (strcmp(method, "GET") == 0 && strcmp(path, "/api/reports") == 0) {
+        sb_append(&sb, "{\"ok\":true,\"reports\":[");
+        DIR *rd = opendir("data/reports");
+        bool first_r = true;
+        if (rd) {
+            struct dirent *de;
+            while ((de = readdir(rd)) != NULL) {
+                const char *ext = strrchr(de->d_name, '.');
+                if (!ext || strcmp(ext, ".json") != 0) {
+                    continue;
+                }
+                char rp[512];
+                snprintf(rp, sizeof(rp), "data/reports/%s", de->d_name);
+                FILE *rf = fopen(rp, "rb");
+                if (!rf) {
+                    continue;
+                }
+                fseek(rf, 0, SEEK_END);
+                long rsz = ftell(rf);
+                fseek(rf, 0, SEEK_SET);
+                if (rsz > 2 && rsz < 524288) {
+                    char *rbuf = (char *) malloc((size_t) rsz + 1);
+                    if (rbuf) {
+                        size_t rn = fread(rbuf, 1, (size_t) rsz, rf);
+                        rbuf[rn] = '\0';
+                        if (!first_r) {
+                            sb_append(&sb, ",");
+                        }
+                        first_r = false;
+                        sb_append_n(&sb, rbuf, rn);
+                        free(rbuf);
+                    }
+                }
+                fclose(rf);
+            }
+            closedir(rd);
+        }
+        sb_append(&sb, "]}");
+        send_http(fd, "200 OK", "application/json", sb.data, sb.len);
+    } else if (strcmp(method, "POST") == 0 && strcmp(path, "/api/reports/generate") == 0) {
+        char py[256];
+        az_python_path(py, sizeof(py));
+        pid_t rpid = fork();
+        if (rpid == 0) {
+            int devnull = open("/dev/null", O_RDWR);
+            if (devnull >= 0) {
+                dup2(devnull, STDIN_FILENO);
+                dup2(devnull, STDOUT_FILENO);
+                dup2(devnull, STDERR_FILENO);
+                close(devnull);
+            }
+            char *argv[] = { py, "src/tools/training_reports.py", "--all", NULL };
+            execvp(py, argv);
+            _exit(127);
+        } else if (rpid > 0) {
+            int wst = 0;
+            waitpid(rpid, &wst, 0);
+        }
+        sb_append(&sb, "{\"ok\":true,\"generated\":true}");
         send_http(fd, "200 OK", "application/json", sb.data, sb.len);
     } else if (strcmp(method, "POST") == 0 && strcmp(path, "/api/p3k/datagen/stop") == 0) {
         p3k_stop_child(&st->dg_pid, &st->dg_running);
@@ -3147,7 +3631,11 @@ static void handle_client(int fd, app_state *st) {
         int threads = json_get_int(body, "threads", 2);
         int iters = json_get_int(body, "iters", 150);
         int nodes = json_get_int(body, "nodes", 12000);
-        if (!p3k_start_spsa(st, threads, iters, nodes)) {
+        p3k_phases ph_chk = p3k_phases_load();
+        if (!ph_chk.nnue_v4_done) {
+            sb_append(&sb,
+                "{\"ok\":false,\"error\":\"Mark Step 3 (Big 1024 NNUE v4) Complete before starting SPSA Search Tuning.\"}");
+        } else if (!p3k_start_spsa(st, threads, iters, nodes)) {
             sb_append(&sb, "{\"ok\":false,\"error\":\"Could not start SPSA tuner.\"}");
         } else {
             handle_p3k_status_json(st, &sb);
@@ -3160,7 +3648,11 @@ static void handle_client(int fd, app_state *st) {
     } else if (strcmp(method, "POST") == 0 && strcmp(path, "/api/p3k/nnue/start") == 0) {
         az_check_alive(st);
         int epochs = json_get_int(body, "epochs", 24);
-        if (st->az_running) {
+        p3k_phases ph_chk = p3k_phases_load();
+        if (!ph_chk.datagen_done) {
+            sb_append(&sb,
+                "{\"ok\":false,\"error\":\"Mark Step 2 (Self-Play Datagen) Complete before starting 1024 NNUE v4 GPU training.\"}");
+        } else if (st->az_running) {
             sb_append(&sb,
                 "{\"ok\":false,\"error\":\"Pause Zero-C v2 first so Big NNUE v4 has full RTX GPU "
                 "VRAM (~20 min)!\"}");
@@ -3177,7 +3669,10 @@ static void handle_client(int fd, app_state *st) {
         handle_p3k_status_json(st, &sb);
         send_http(fd, "200 OK", "application/json", sb.data, sb.len);
     } else if (strcmp(method, "POST") == 0 && strcmp(path, "/api/p3k/syzygy/start") == 0) {
-        if (!p3k_start_syzygy(st)) {
+        if (!tier2_is_complete()) {
+            sb_append(&sb,
+                "{\"ok\":false,\"error\":\"Tier 3 Locked: Complete & mark Zero-C v2 AND Singularity v5 Distillation in Tier 2 first!\"}");
+        } else if (!p3k_start_syzygy(st)) {
             sb_append(&sb, "{\"ok\":false,\"error\":\"Could not launch Syzygy downloader.\"}");
         } else {
             handle_p3k_status_json(st, &sb);
@@ -3186,6 +3681,159 @@ static void handle_client(int fd, app_state *st) {
     } else if (strcmp(method, "POST") == 0 && strcmp(path, "/api/p3k/syzygy/stop") == 0) {
         p3k_stop_child(&st->syz_pid, &st->syz_running);
         handle_p3k_status_json(st, &sb);
+        send_http(fd, "200 OK", "application/json", sb.data, sb.len);
+    } else if (strcmp(method, "POST") == 0 && strcmp(path, "/api/p3k/phase_complete") == 0) {
+        char step[64] = "";
+        json_get_string(body, "step", step, sizeof(step));
+        p3k_phases ph = p3k_phases_load();
+        struct stat dgst;
+        unsigned long long dg_pos = 0;
+        if (stat("data/datagen_v4.bin", &dgst) == 0 && dgst.st_size > 0) {
+            dg_pos = (unsigned long long) dgst.st_size / 36ull;
+        }
+        bool ok = true;
+        const char *err = "";
+        if (strcmp(step, "syzygy") == 0) {
+            if (!tier2_is_complete()) {
+                ok = false;
+                err = "Complete Tier 2 (Zero-C v2 + Singularity v5) before Tier 3 Step 1.";
+            } else if (syzygy_installed_pieces() < 3) {
+                ok = false;
+                err = "Download at least partial 3-5 piece Syzygy tables before marking Step 1 Complete.";
+            } else {
+                ph.syzygy_done = true;
+            }
+        } else if (strcmp(step, "datagen") == 0) {
+            if (!ph.syzygy_done) {
+                ok = false;
+                err = "Mark Step 1 (Syzygy) Complete first.";
+            } else if (dg_pos < 1024ull) {
+                ok = false;
+                err = "Run at least minimal Datagen compute (>=1,024 positions) before marking Step 2 Complete.";
+            } else {
+                ph.datagen_done = true;
+            }
+        } else if (strcmp(step, "nnue_v4") == 0) {
+            if (!ph.datagen_done) {
+                ok = false;
+                err = "Mark Step 2 (Datagen) Complete first.";
+            } else if (!apex_v4_nnue_ready()) {
+                ok = false;
+                err = "Run at least 1 epoch of 1024 NNUE v4 training (exporting data/titan_v6_1024.nnue) before marking Step 3 Complete.";
+            } else {
+                ph.nnue_v4_done = true;
+            }
+        } else if (strcmp(step, "spsa") == 0) {
+            if (!ph.nnue_v4_done) {
+                ok = false;
+                err = "Mark Step 3 (1024 NNUE v4) Complete first.";
+            } else if (access("data/spsa_best.json", R_OK) != 0) {
+                ok = false;
+                err = "Run at least 1 iteration of SPSA Search Tuning before marking Step 4 Complete.";
+            } else {
+                ph.spsa_done = true;
+            }
+        } else if (strcmp(step, "distill") == 0) {
+            if (!az_v2_is_graduated()) {
+                ok = false;
+                err = "Mark Track B Phase 1 (Zero-C v2) Complete first.";
+            } else if (!hybrid_nnue_is_unlocked()) {
+                ok = false;
+                err = "Run Singularity v5 Distillation to produce data/chess_net_zero_v4.nnue before marking Complete.";
+            } else {
+                ph.distill_done = true;
+            }
+        } else {
+            ok = false;
+            err = "Unknown training phase.";
+        }
+        if (ok) {
+            p3k_phases_save(&ph);
+            handle_p3k_status_json(st, &sb);
+        } else {
+            sb_printf(&sb, "{\"ok\":false,\"error\":");
+            sb_json_str(&sb, err);
+            sb_append(&sb, "}");
+        }
+        send_http(fd, "200 OK", "application/json", sb.data, sb.len);
+    } else if (strcmp(method, "POST") == 0 && strcmp(path, "/api/p3k/reset_step") == 0) {
+        char step[64] = "";
+        json_get_string(body, "step", step, sizeof(step));
+        p3k_phases ph = p3k_phases_load();
+        bool ok = true;
+        const char *msg = "Step progress reset cleanly.";
+        if (strcmp(step, "syzygy") == 0) {
+            p3k_stop_child(&st->syz_pid, &st->syz_running);
+            unlink_glob_dir(SYZYGY_DEFAULT_DIR, ".rtbw", ".rtbz");
+            unlink("data/reports/syzygy_report.json");
+            ph.syzygy_done = false;
+            ph.datagen_done = false;
+            ph.nnue_v4_done = false;
+            ph.spsa_done = false;
+            msg = "Cleared downloaded 5-piece Syzygy files & locked downstream Track A phases.";
+        } else if (strcmp(step, "datagen") == 0) {
+            p3k_stop_child(&st->dg_pid, &st->dg_running);
+            unlink("data/datagen_v4.bin");
+            unlink("data/p3k_datagen_status.json");
+            unlink("data/p3k_datagen_history.json");
+            unlink("data/p3k_datagen_stats.json");
+            unlink("data/p3k_datagen.log");
+            unlink("data/reports/datagen_report.json");
+            ph.datagen_done = false;
+            ph.nnue_v4_done = false;
+            ph.spsa_done = false;
+            msg = "Reset Self-Play Datagen dataset & locked Steps 3-4 until Step 2 is completed again.";
+        } else if (strcmp(step, "nnue_v4") == 0) {
+            p3k_stop_child(&st->nnue_pid, &st->nnue_running);
+            unlink("data/titan_v6_1024.nnue");
+            unlink("data/p3k_nnue_status.json");
+            unlink("data/p3k_nnue.log");
+            unlink("data/reports/nnue_v4_report.json");
+            ph.nnue_v4_done = false;
+            ph.spsa_done = false;
+            msg = "Reset 1024 NNUE v4 weights & locked Step 4 (SPSA) until Step 3 is completed again.";
+        } else if (strcmp(step, "spsa") == 0) {
+            p3k_stop_child(&st->spsa_pid, &st->spsa_running);
+            unlink("data/spsa_best.json");
+            unlink("data/p3k_spsa_status.json");
+            unlink("data/p3k_spsa.log");
+            unlink("data/reports/spsa_report.json");
+            ph.spsa_done = false;
+            msg = "Reset SPSA Search Tuner parameters & history.";
+        } else if (strcmp(step, "distill") == 0) {
+            distill_stop(st);
+            unlink("data/chess_net_zero_v4.nnue");
+            unlink("data/az/distill_status.json");
+            unlink("data/az/distill.log");
+            unlink("data/reports/distill_report.json");
+            ph.distill_done = false;
+            msg = "Reset Singularity v5 distilled NNUE & history.";
+        } else if (strcmp(step, "toy") == 0) {
+            p3k_stop_child(&st->toy_pid, &st->toy_running);
+            unlink("data/az_toy/latest.pt");
+            unlink("data/az_toy/status.json");
+            unlink("data/az_toy/replay.npz");
+            unlink("data/az_toy/v2_complete.flag");
+            unlink_glob_dir("data/az_toy/checkpoints", ".pt", NULL);
+            msg = "Reset 15-Min Toy Net sandbox (data/az_toy/) to empty state.";
+        } else if (strcmp(step, "zeroc") == 0) {
+            az_reset_files(st);
+            ph.distill_done = false;
+            msg = "Reset Zero-C v2 (data/az/) back to empty state & locked Distillation.";
+        } else {
+            ok = false;
+            msg = "Unknown step to reset.";
+        }
+        if (ok) {
+            p3k_phases_save(&ph);
+            sb_printf(&sb, "{\"ok\":true,\"message\":");
+            sb_json_str(&sb, msg);
+            sb_append(&sb, "}");
+        } else {
+            sb_printf(&sb, "{\"ok\":false,\"error\":");
+            sb_json_str(&sb, msg);
+            sb_append(&sb, "}");
+        }
         send_http(fd, "200 OK", "application/json", sb.data, sb.len);
     } else if (strcmp(method, "GET") == 0 && strcmp(path, "/api/toy/status") == 0) {
         handle_toy_status_json(st, &sb);
@@ -3459,6 +4107,7 @@ int main(int argc, char **argv) {
     uci_delete(&st.sf_tb);
     uci_delete(&st.apex_uci);
     uci_delete(&st.hybrid_uci);
+    uci_delete(&st.az_toy_uci);
     uci_delete(&st.az_v1_uci);
     uci_delete(&st.az_uci);
     history_free(&st.hist);

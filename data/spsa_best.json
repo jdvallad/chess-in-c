@@ -1,0 +1,20 @@
+{
+  "iter": 300,
+  "params": {
+    "RFPBase": 76,
+    "RFPImpr": 15,
+    "FutMult": 109,
+    "FutBase": 69,
+    "ProbCutM": 190,
+    "AspDelta": 25,
+    "SEDepth": 7,
+    "SEDblM": 35,
+    "HistPrune": 2386,
+    "HistLMRDiv": 8232,
+    "RazMargin": 240,
+    "CorrDiv": 514,
+    "LMRCapDiv": 6162,
+    "NMPDiv": 6
+  },
+  "updated_at": "2026-11-25 21:58:03"
+}

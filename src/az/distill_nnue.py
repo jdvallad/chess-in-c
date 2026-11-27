@@ -207,11 +207,14 @@ def main():
     ap.add_argument("--batch-size", type=int, default=4096)
     ap.add_argument("--lr", type=float, default=0.004)
     ap.add_argument("--teacher-blend", type=float, default=0.75)
+    ap.add_argument("--init-untrained", action="store_true",
+                    help="Export an untrained random Singularity v3 net ONLY if --out does not exist.")
     args = ap.parse_args()
 
     t0 = time.time()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     use_amp = device.type == "cuda"
+    hist = []
 
     def write_st(phase: str, running: bool, progress: float, msg: str, extra: dict = None):
         blob = {
@@ -222,12 +225,26 @@ def main():
             "message": msg,
             "out_path": args.out,
             "distilled": os.path.exists(args.out),
+            "history": hist[-150:],
             "elapsed_sec": round(time.time() - t0, 1),
             "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
         if extra:
             blob.update(extra)
         atomic_write_json(args.status, blob)
+
+    if args.init_untrained:
+        if os.path.exists(args.out):
+            print(f"[Distill] Refusing --init-untrained: {args.out} already exists!", file=sys.stderr)
+            return 0
+        net = QuantizedNNUEv3()
+        net.export_quantized(args.out)
+        write_st(
+            "skipped_untrained", False, 0.0,
+            "Initialized UNTRAINED random Singularity v5 NNUE — Distillation skipped (not recommended)!",
+            {"untrained": True, "distilled": True},
+        )
+        return 0
 
     try:
         if not os.path.exists(args.ckpt):
@@ -386,6 +403,14 @@ def main():
                 best_state = {k: v.detach().cpu().clone() for k, v in net.state_dict().items()}
 
             pct = 40.0 + 57.0 * (ep / float(args.epochs))
+            trn_mse = round(trn_loss_sum / max(1, trn_batches), 5)
+            hist.append({
+                "epoch": ep,
+                "train_mse": trn_mse,
+                "val_mse": round(val_loss, 5),
+                "best_val_mse": round(best_val, 5),
+                "lr": round(lr_now, 5),
+            })
             write_st(
                 "training",
                 True,
@@ -394,7 +419,7 @@ def main():
                 {
                     "epoch": ep,
                     "epochs": args.epochs,
-                    "train_mse": round(trn_loss_sum / max(1, trn_batches), 5),
+                    "train_mse": trn_mse,
                     "val_mse": round(val_loss, 5),
                     "best_val_mse": round(best_val, 5),
                     "samples": n_valid,
@@ -418,11 +443,18 @@ def main():
                 "epoch": args.epochs,
                 "epochs": args.epochs,
                 "val_mse": round(best_val, 5),
+                "best_val_mse": round(best_val, 5),
                 "samples": n_valid,
                 "teacher_gen": teacher_gen,
                 "distilled": True,
             },
         )
+        try:
+            sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+            import training_reports
+            training_reports.generate_all_reports()
+        except Exception:
+            pass
         return 0
     except Exception as exc:
         write_st("error", False, 0.0, f"Distillation failed: {exc}")

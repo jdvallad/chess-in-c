@@ -4159,3 +4159,488 @@ select:focus,
   color: var(--f-accent, #ff9e64);
   margin-left: 4px;
 }
+
+/* ==========================================================================
+   Whole-Program Left-Sidebar AI & Chess Studio Overhaul
+   ========================================================================== */
+.studio-shell {
+  display: flex;
+  min-height: 100vh;
+  width: 100%;
+  background: var(--bg);
+}
+
+.studio-sidebar {
+  width: 248px;
+  flex-shrink: 0;
+  background: linear-gradient(180deg, #111722 0%, #0d121a 100%);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: 16px 12px;
+  gap: 14px;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  z-index: 40;
+  transition: width 0.2s ease, transform 0.2s ease;
+}
+
+.studio-sidebar.collapsed {
+  width: 0;
+  padding: 0;
+  border-right: none;
+  overflow: hidden;
+}
+
+.sb-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+}
+
+.sb-brand .brand-sub {
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}
+
+.sb-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex: 1;
+}
+
+.sb-group {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.sb-group-lbl {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: #6e7681;
+  padding: 4px 10px;
+}
+
+.sb-link {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 11px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #c9d1d9;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.14s, border-color 0.14s, color 0.14s;
+}
+
+.sb-link:hover {
+  background: rgba(88, 166, 255, 0.08);
+  color: #fff;
+}
+
+.sb-link.active {
+  background: rgba(88, 166, 255, 0.16);
+  border-color: rgba(88, 166, 255, 0.42);
+  color: #79c0ff;
+  font-weight: 700;
+}
+
+.sb-footer-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.sb-footer-card:hover {
+  border-color: var(--accent);
+}
+
+.sb-fc-top {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: #e6edf3;
+}
+
+.sb-live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #6e7681;
+  flex-shrink: 0;
+}
+
+.sb-live-dot.running {
+  background: #3fb950;
+  box-shadow: 0 0 8px #3fb950;
+  animation: pulseDot 1.6s infinite;
+}
+
+.sb-fc-sub {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 3px;
+  line-height: 1.35;
+}
+
+.studio-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.topbar-ws-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #e6edf3;
+}
+
+.live-job-pill {
+  padding: 5px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  color: #c9d1d9;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.live-job-pill.active {
+  border-color: rgba(63, 185, 80, 0.55);
+  background: rgba(63, 185, 80, 0.14);
+  color: #7ee787;
+}
+
+.studio-viewport {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+}
+
+.studio-view {
+  width: 100%;
+}
+
+.studio-view .view-inner {
+  width: 100%;
+  max-width: 1480px;
+  max-height: none !important;
+  margin: 0 auto;
+  padding: 20px 26px 42px;
+  overflow: visible !important;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+.studio-shell .home-screen {
+  max-width: 1480px;
+  padding: 22px 26px 42px;
+}
+
+.studio-shell .workspace {
+  padding: 16px 22px 28px;
+}
+
+/* Clear Track A / Track B Roadmap Banner */
+.pipeline-tracks-banner {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.pt-track {
+  border-radius: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.pt-track-a {
+  border-color: rgba(240, 136, 62, 0.42);
+  background: rgba(240, 136, 62, 0.07);
+}
+
+.pt-track-b {
+  border-color: rgba(163, 113, 247, 0.42);
+  background: rgba(163, 113, 247, 0.07);
+}
+
+.pt-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.pt-head span {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.pt-steps {
+  font-size: 12px;
+  color: #c9d1d9;
+}
+
+/* Per-Stage Progress Charts inside Forge, Zero-C Distill & Toy Net */
+.p3k-charts-split {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.p3k-chart-box {
+  background: rgba(10, 14, 20, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 9px;
+  padding: 8px 10px;
+  margin-top: 10px;
+}
+
+.p3k-charts-split .p3k-chart-box {
+  margin-top: 0;
+}
+
+.p3k-chart-hdr {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11.5px;
+  color: #e6edf3;
+  margin-bottom: 5px;
+}
+
+.p3k-chart-hdr span {
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.p3k-canvas {
+  width: 100%;
+  display: block;
+}
+
+/* Skip Compute (Not Recommended) Button */
+.skip-warn-btn {
+  background: rgba(248, 81, 73, 0.12);
+  border: 1px solid rgba(248, 81, 73, 0.4);
+  color: #ff9c97;
+}
+
+.skip-warn-btn:hover:not(:disabled) {
+  background: rgba(248, 81, 73, 0.24);
+  border-color: #f85149;
+  color: #fff;
+}
+
+/* What This Bot Represents + Partial / Untrained Badges */
+.fc-partial-badge,
+.fc-untrained-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font-size: 9.5px;
+  font-weight: 800;
+  padding: 2px 6px;
+  border-radius: 999px;
+  letter-spacing: 0.03em;
+}
+
+.fc-partial-badge {
+  background: rgba(227, 179, 65, 0.16);
+  border: 1px solid rgba(227, 179, 65, 0.55);
+  color: #ffd97d;
+}
+
+.fc-untrained-badge {
+  background: rgba(248, 81, 73, 0.18);
+  border: 1px solid rgba(248, 81, 73, 0.6);
+  color: #ff9c97;
+}
+
+.bot-represents-box {
+  background: rgba(88, 166, 255, 0.07);
+  border: 1px solid rgba(88, 166, 255, 0.28);
+  border-radius: 10px;
+  padding: 11px 13px;
+  margin: 10px 0;
+}
+
+.bot-represents-box strong {
+  display: block;
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #79c0ff;
+  margin-bottom: 4px;
+}
+
+.bot-represents-box p {
+  font-size: 12.5px;
+  line-height: 1.48;
+  color: #dce4ee;
+}
+
+/* Stage Training Reports Archive */
+.reports-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(460px, 1fr));
+  gap: 16px;
+  margin-top: 14px;
+}
+
+.report-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.report-card.health-warn {
+  border-color: rgba(227, 179, 65, 0.5);
+}
+
+.report-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.report-stage-tag {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.report-card-head h3 {
+  font-size: 16px;
+  margin-top: 2px;
+}
+
+.report-status-pill {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(63, 185, 80, 0.16);
+  color: #7ee787;
+  border: 1px solid rgba(63, 185, 80, 0.45);
+  white-space: nowrap;
+}
+
+.report-status-pill.warn {
+  background: rgba(227, 179, 65, 0.16);
+  color: #ffd97d;
+  border-color: rgba(227, 179, 65, 0.5);
+}
+
+.report-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.report-metric-tile {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.report-metric-tile span {
+  display: block;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.report-metric-tile strong {
+  display: block;
+  font-size: 13.5px;
+  color: #f0f6fc;
+  margin-top: 2px;
+}
+
+.report-diag {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: #c9d1d9;
+  background: rgba(255, 255, 255, 0.025);
+  padding: 9px 11px;
+  border-radius: 8px;
+  border-left: 3px solid var(--accent);
+}
+
+.report-next {
+  font-size: 12px;
+  color: #8b949e;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+@media (max-width: 900px) {
+  .studio-sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 300;
+  }
+  .reports-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.p3k-lock-note {
+  background: rgba(248, 81, 73, 0.11);
+  border: 1px solid rgba(248, 81, 73, 0.42);
+  color: #ffb1ad;
+  border-radius: 8px;
+  padding: 7px 11px;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.p3k-card.locked-phase {
+  opacity: 0.78;
+}

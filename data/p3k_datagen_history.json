@@ -1,0 +1,734 @@
+[
+  {
+    "session_pos": 3480,
+    "pps": 2318.0,
+    "games": 48,
+    "total_pos": 1234322
+  },
+  {
+    "session_pos": 391346,
+    "pps": 2773.0,
+    "games": 4621,
+    "total_pos": 1622188
+  },
+  {
+    "session_pos": 810954,
+    "pps": 2889.0,
+    "games": 9509,
+    "total_pos": 2041796
+  },
+  {
+    "session_pos": 1227215,
+    "pps": 2920.0,
+    "games": 14391,
+    "total_pos": 2458057
+  },
+  {
+    "session_pos": 1648457,
+    "pps": 2945.0,
+    "games": 19311,
+    "total_pos": 2879299
+  },
+  {
+    "session_pos": 2068152,
+    "pps": 2957.0,
+    "games": 24227,
+    "total_pos": 3298994
+  },
+  {
+    "session_pos": 2486925,
+    "pps": 2965.0,
+    "games": 29215,
+    "total_pos": 3717767
+  },
+  {
+    "session_pos": 2906378,
+    "pps": 2970.0,
+    "games": 34107,
+    "total_pos": 4137220
+  },
+  {
+    "session_pos": 3324619,
+    "pps": 2974.0,
+    "games": 39022,
+    "total_pos": 4555461
+  },
+  {
+    "session_pos": 3743438,
+    "pps": 2977.0,
+    "games": 43948,
+    "total_pos": 4974280
+  },
+  {
+    "session_pos": 4162288,
+    "pps": 2979.0,
+    "games": 48918,
+    "total_pos": 5393130
+  },
+  {
+    "session_pos": 4568552,
+    "pps": 2973.0,
+    "games": 53712,
+    "total_pos": 5799394
+  },
+  {
+    "session_pos": 4959911,
+    "pps": 2959.0,
+    "games": 58292,
+    "total_pos": 6190753
+  },
+  {
+    "session_pos": 5379758,
+    "pps": 2963.0,
+    "games": 63205,
+    "total_pos": 6610600
+  },
+  {
+    "session_pos": 5798607,
+    "pps": 2966.0,
+    "games": 68113,
+    "total_pos": 7029449
+  },
+  {
+    "session_pos": 6218212,
+    "pps": 2968.0,
+    "games": 73052,
+    "total_pos": 7449054
+  },
+  {
+    "session_pos": 6638460,
+    "pps": 2971.0,
+    "games": 77978,
+    "total_pos": 7869302
+  },
+  {
+    "session_pos": 7059566,
+    "pps": 2974.0,
+    "games": 82922,
+    "total_pos": 8290408
+  },
+  {
+    "session_pos": 7476577,
+    "pps": 2975.0,
+    "games": 87798,
+    "total_pos": 8707419
+  },
+  {
+    "session_pos": 7900091,
+    "pps": 2978.0,
+    "games": 92751,
+    "total_pos": 9130933
+  },
+  {
+    "session_pos": 8321338,
+    "pps": 2980.0,
+    "games": 97708,
+    "total_pos": 9552180
+  },
+  {
+    "session_pos": 8743312,
+    "pps": 2982.0,
+    "games": 102713,
+    "total_pos": 9974154
+  },
+  {
+    "session_pos": 9165881,
+    "pps": 2984.0,
+    "games": 107675,
+    "total_pos": 10396723
+  },
+  {
+    "session_pos": 9588795,
+    "pps": 2986.0,
+    "games": 112605,
+    "total_pos": 10819637
+  },
+  {
+    "session_pos": 10011827,
+    "pps": 2988.0,
+    "games": 117553,
+    "total_pos": 11242669
+  },
+  {
+    "session_pos": 10433168,
+    "pps": 2989.0,
+    "games": 122520,
+    "total_pos": 11664010
+  },
+  {
+    "session_pos": 10854337,
+    "pps": 2990.0,
+    "games": 127476,
+    "total_pos": 12085179
+  },
+  {
+    "session_pos": 11275439,
+    "pps": 2991.0,
+    "games": 132458,
+    "total_pos": 12506281
+  },
+  {
+    "session_pos": 11695832,
+    "pps": 2992.0,
+    "games": 137428,
+    "total_pos": 12926674
+  },
+  {
+    "session_pos": 12115958,
+    "pps": 2993.0,
+    "games": 142401,
+    "total_pos": 13346800
+  },
+  {
+    "session_pos": 12538681,
+    "pps": 2994.0,
+    "games": 147330,
+    "total_pos": 13769523
+  },
+  {
+    "session_pos": 12960425,
+    "pps": 2995.0,
+    "games": 152285,
+    "total_pos": 14191267
+  },
+  {
+    "session_pos": 13382593,
+    "pps": 2996.0,
+    "games": 157246,
+    "total_pos": 14613435
+  },
+  {
+    "session_pos": 13798190,
+    "pps": 2995.0,
+    "games": 162128,
+    "total_pos": 15029032
+  },
+  {
+    "session_pos": 14221057,
+    "pps": 2996.0,
+    "games": 167103,
+    "total_pos": 15451899
+  },
+  {
+    "session_pos": 14642369,
+    "pps": 2997.0,
+    "games": 172061,
+    "total_pos": 15873211
+  },
+  {
+    "session_pos": 15064202,
+    "pps": 2998.0,
+    "games": 177049,
+    "total_pos": 16295044
+  },
+  {
+    "session_pos": 15486967,
+    "pps": 2999.0,
+    "games": 182005,
+    "total_pos": 16717809
+  },
+  {
+    "session_pos": 15907360,
+    "pps": 2999.0,
+    "games": 186993,
+    "total_pos": 17138202
+  },
+  {
+    "session_pos": 16328801,
+    "pps": 2999.0,
+    "games": 191963,
+    "total_pos": 17559643
+  },
+  {
+    "session_pos": 16748890,
+    "pps": 3000.0,
+    "games": 196925,
+    "total_pos": 17979732
+  },
+  {
+    "session_pos": 17172905,
+    "pps": 3001.0,
+    "games": 201877,
+    "total_pos": 18403747
+  },
+  {
+    "session_pos": 17594339,
+    "pps": 3001.0,
+    "games": 206853,
+    "total_pos": 18825181
+  },
+  {
+    "session_pos": 18018046,
+    "pps": 3002.0,
+    "games": 211791,
+    "total_pos": 19248888
+  },
+  {
+    "session_pos": 18438662,
+    "pps": 3002.0,
+    "games": 216764,
+    "total_pos": 19669504
+  },
+  {
+    "session_pos": 18860373,
+    "pps": 3003.0,
+    "games": 221726,
+    "total_pos": 20091215
+  },
+  {
+    "session_pos": 19283458,
+    "pps": 3003.0,
+    "games": 226658,
+    "total_pos": 20514300
+  },
+  {
+    "session_pos": 19704821,
+    "pps": 3004.0,
+    "games": 231619,
+    "total_pos": 20935663
+  },
+  {
+    "session_pos": 20126917,
+    "pps": 3004.0,
+    "games": 236610,
+    "total_pos": 21357759
+  },
+  {
+    "session_pos": 20545750,
+    "pps": 3004.0,
+    "games": 241541,
+    "total_pos": 21776592
+  },
+  {
+    "session_pos": 20914328,
+    "pps": 2997.0,
+    "games": 245892,
+    "total_pos": 22145170
+  },
+  {
+    "session_pos": 21328185,
+    "pps": 2996.0,
+    "games": 250800,
+    "total_pos": 22559027
+  },
+  {
+    "session_pos": 21710620,
+    "pps": 2991.0,
+    "games": 255262,
+    "total_pos": 22941462
+  },
+  {
+    "session_pos": 22104912,
+    "pps": 2988.0,
+    "games": 259933,
+    "total_pos": 23335754
+  },
+  {
+    "session_pos": 22516797,
+    "pps": 2987.0,
+    "games": 264755,
+    "total_pos": 23747639
+  },
+  {
+    "session_pos": 22898042,
+    "pps": 2983.0,
+    "games": 269274,
+    "total_pos": 24128884
+  },
+  {
+    "session_pos": 23236271,
+    "pps": 2973.0,
+    "games": 273293,
+    "total_pos": 24467113
+  },
+  {
+    "session_pos": 23618208,
+    "pps": 2969.0,
+    "games": 277756,
+    "total_pos": 24849050
+  },
+  {
+    "session_pos": 24039668,
+    "pps": 2969.0,
+    "games": 282697,
+    "total_pos": 25270510
+  },
+  {
+    "session_pos": 24467128,
+    "pps": 2971.0,
+    "games": 287701,
+    "total_pos": 25697970
+  },
+  {
+    "session_pos": 24853325,
+    "pps": 2968.0,
+    "games": 292255,
+    "total_pos": 26084167
+  },
+  {
+    "session_pos": 25230984,
+    "pps": 2963.0,
+    "games": 296698,
+    "total_pos": 26461826
+  },
+  {
+    "session_pos": 25611028,
+    "pps": 2959.0,
+    "games": 301181,
+    "total_pos": 26841870
+  },
+  {
+    "session_pos": 25999352,
+    "pps": 2957.0,
+    "games": 305745,
+    "total_pos": 27230194
+  },
+  {
+    "session_pos": 26434045,
+    "pps": 2959.0,
+    "games": 310907,
+    "total_pos": 27664887
+  },
+  {
+    "session_pos": 26851295,
+    "pps": 2960.0,
+    "games": 315834,
+    "total_pos": 28082137
+  },
+  {
+    "session_pos": 27283304,
+    "pps": 2962.0,
+    "games": 320910,
+    "total_pos": 28514146
+  },
+  {
+    "session_pos": 27706843,
+    "pps": 2963.0,
+    "games": 325916,
+    "total_pos": 28937685
+  },
+  {
+    "session_pos": 28147297,
+    "pps": 2966.0,
+    "games": 331134,
+    "total_pos": 29378139
+  },
+  {
+    "session_pos": 28584359,
+    "pps": 2968.0,
+    "games": 336245,
+    "total_pos": 29815201
+  },
+  {
+    "session_pos": 29023915,
+    "pps": 2971.0,
+    "games": 341419,
+    "total_pos": 30254757
+  },
+  {
+    "session_pos": 29464379,
+    "pps": 2973.0,
+    "games": 346583,
+    "total_pos": 30695221
+  },
+  {
+    "session_pos": 29904629,
+    "pps": 2976.0,
+    "games": 351803,
+    "total_pos": 31135471
+  },
+  {
+    "session_pos": 30341345,
+    "pps": 2978.0,
+    "games": 356944,
+    "total_pos": 31572187
+  },
+  {
+    "session_pos": 30781809,
+    "pps": 2980.0,
+    "games": 362108,
+    "total_pos": 32012651
+  },
+  {
+    "session_pos": 31227540,
+    "pps": 2983.0,
+    "games": 367373,
+    "total_pos": 32458382
+  },
+  {
+    "session_pos": 31644548,
+    "pps": 2983.0,
+    "games": 372265,
+    "total_pos": 32875390
+  },
+  {
+    "session_pos": 32066727,
+    "pps": 2984.0,
+    "games": 377267,
+    "total_pos": 33297569
+  },
+  {
+    "session_pos": 32477792,
+    "pps": 2983.0,
+    "games": 382112,
+    "total_pos": 33708634
+  },
+  {
+    "session_pos": 32897015,
+    "pps": 2984.0,
+    "games": 387029,
+    "total_pos": 34127857
+  },
+  {
+    "session_pos": 33316527,
+    "pps": 2984.0,
+    "games": 391970,
+    "total_pos": 34547369
+  },
+  {
+    "session_pos": 33733656,
+    "pps": 2984.0,
+    "games": 396895,
+    "total_pos": 34964498
+  },
+  {
+    "session_pos": 34157684,
+    "pps": 2985.0,
+    "games": 401852,
+    "total_pos": 35388526
+  },
+  {
+    "session_pos": 34581311,
+    "pps": 2985.0,
+    "games": 406759,
+    "total_pos": 35812153
+  },
+  {
+    "session_pos": 34966326,
+    "pps": 2982.0,
+    "games": 411254,
+    "total_pos": 36197168
+  },
+  {
+    "session_pos": 35380562,
+    "pps": 2982.0,
+    "games": 416122,
+    "total_pos": 36611404
+  },
+  {
+    "session_pos": 35822385,
+    "pps": 2984.0,
+    "games": 421354,
+    "total_pos": 37053227
+  },
+  {
+    "session_pos": 36264197,
+    "pps": 2986.0,
+    "games": 426512,
+    "total_pos": 37495039
+  },
+  {
+    "session_pos": 36705833,
+    "pps": 2989.0,
+    "games": 431719,
+    "total_pos": 37936675
+  },
+  {
+    "session_pos": 37144237,
+    "pps": 2990.0,
+    "games": 436866,
+    "total_pos": 38375079
+  },
+  {
+    "session_pos": 37580642,
+    "pps": 2992.0,
+    "games": 441990,
+    "total_pos": 38811484
+  },
+  {
+    "session_pos": 38014942,
+    "pps": 2993.0,
+    "games": 447068,
+    "total_pos": 39245784
+  },
+  {
+    "session_pos": 38452714,
+    "pps": 2995.0,
+    "games": 452210,
+    "total_pos": 39683556
+  },
+  {
+    "session_pos": 38859423,
+    "pps": 2994.0,
+    "games": 456963,
+    "total_pos": 40090265
+  },
+  {
+    "session_pos": 39297192,
+    "pps": 2995.0,
+    "games": 462154,
+    "total_pos": 40528034
+  },
+  {
+    "session_pos": 39729896,
+    "pps": 2996.0,
+    "games": 467246,
+    "total_pos": 40960738
+  },
+  {
+    "session_pos": 40151248,
+    "pps": 2997.0,
+    "games": 472249,
+    "total_pos": 41382090
+  },
+  {
+    "session_pos": 40570328,
+    "pps": 2997.0,
+    "games": 477200,
+    "total_pos": 41801170
+  },
+  {
+    "session_pos": 41002112,
+    "pps": 2998.0,
+    "games": 482298,
+    "total_pos": 42232954
+  },
+  {
+    "session_pos": 41394245,
+    "pps": 2996.0,
+    "games": 486885,
+    "total_pos": 42625087
+  },
+  {
+    "session_pos": 41795797,
+    "pps": 2995.0,
+    "games": 491600,
+    "total_pos": 43026639
+  },
+  {
+    "session_pos": 42206999,
+    "pps": 2994.0,
+    "games": 496429,
+    "total_pos": 43437841
+  },
+  {
+    "session_pos": 42639011,
+    "pps": 2995.0,
+    "games": 501503,
+    "total_pos": 43869853
+  },
+  {
+    "session_pos": 43056217,
+    "pps": 2995.0,
+    "games": 506459,
+    "total_pos": 44287059
+  },
+  {
+    "session_pos": 43495485,
+    "pps": 2997.0,
+    "games": 511621,
+    "total_pos": 44726327
+  },
+  {
+    "session_pos": 43925758,
+    "pps": 2997.0,
+    "games": 516729,
+    "total_pos": 45156600
+  },
+  {
+    "session_pos": 44348998,
+    "pps": 2998.0,
+    "games": 521665,
+    "total_pos": 45579840
+  },
+  {
+    "session_pos": 44710325,
+    "pps": 2994.0,
+    "games": 525917,
+    "total_pos": 45941167
+  },
+  {
+    "session_pos": 45108415,
+    "pps": 2993.0,
+    "games": 530573,
+    "total_pos": 46339257
+  },
+  {
+    "session_pos": 45523539,
+    "pps": 2992.0,
+    "games": 535442,
+    "total_pos": 46754381
+  },
+  {
+    "session_pos": 45924482,
+    "pps": 2991.0,
+    "games": 540176,
+    "total_pos": 47155324
+  },
+  {
+    "session_pos": 46248691,
+    "pps": 2985.0,
+    "games": 543975,
+    "total_pos": 47479533
+  },
+  {
+    "session_pos": 46635332,
+    "pps": 2983.0,
+    "games": 548544,
+    "total_pos": 47866174
+  },
+  {
+    "session_pos": 47049607,
+    "pps": 2983.0,
+    "games": 553413,
+    "total_pos": 48280449
+  },
+  {
+    "session_pos": 47465176,
+    "pps": 2983.0,
+    "games": 558291,
+    "total_pos": 48696018
+  },
+  {
+    "session_pos": 47881918,
+    "pps": 2983.0,
+    "games": 563187,
+    "total_pos": 49112760
+  },
+  {
+    "session_pos": 48296093,
+    "pps": 2983.0,
+    "games": 568128,
+    "total_pos": 49526935
+  },
+  {
+    "session_pos": 48710524,
+    "pps": 2983.0,
+    "games": 572966,
+    "total_pos": 49941366
+  },
+  {
+    "session_pos": 49126020,
+    "pps": 2983.0,
+    "games": 577866,
+    "total_pos": 50356862
+  },
+  {
+    "session_pos": 49543611,
+    "pps": 2983.0,
+    "games": 582759,
+    "total_pos": 50774453
+  },
+  {
+    "session_pos": 49960911,
+    "pps": 2983.0,
+    "games": 587608,
+    "total_pos": 51191753
+  },
+  {
+    "session_pos": 50000808,
+    "pps": 2983.0,
+    "games": 588063,
+    "total_pos": 51231650
+  }
+]

@@ -38,6 +38,11 @@ void uci_delete(uci_engine **eng);
 
 const char *uci_get_name(const uci_engine *eng);
 const char *uci_get_path(const uci_engine *eng);
+int uci_get_min_elo(const uci_engine *eng);
+int uci_get_max_elo(const uci_engine *eng);
+
+// Apply SPSA search parameters from a JSON file (e.g. data/spsa_best.json). Returns count applied.
+int uci_apply_spsa_file(uci_engine *eng, const char *json_path);
 
 // Stockfish level presets (levels 7..11).
 int uci_first_level(void);

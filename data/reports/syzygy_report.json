@@ -1,0 +1,29 @@
+{
+  "id": "syzygy",
+  "stage": "Tier 3 \u00b7 Step 1 \u00b7 5-Piece Syzygy Vault",
+  "title": "Syzygy 3-4-5 Endgame Tablebases",
+  "status": "complete",
+  "health": "ok",
+  "updated_at": "2026-11-27 00:57:40",
+  "summary": "290 / 290 tablebase files installed (938.4 MB). Exact WDL/DTZ lookups active for <=5 piece endgames.",
+  "metrics": [
+    {
+      "label": "Total Files",
+      "value": "290 / 290"
+    },
+    {
+      "label": "WDL / DTZ Split",
+      "value": "145 WDL \u00b7 145 DTZ"
+    },
+    {
+      "label": "Disk Footprint",
+      "value": "938.4 MB"
+    },
+    {
+      "label": "Unlock Impact",
+      "value": "Apex-C + Syzygy (#19)"
+    }
+  ],
+  "diagnosis": "Full 3-4-5 piece coverage verified \u2014 mathematical endgame perfection active.",
+  "next_step": "Proceed to Tier 3 Step 2 (Self-Play Datagen \u2014 Pass 1 uses Singularity v5 as Teacher!)."
+}

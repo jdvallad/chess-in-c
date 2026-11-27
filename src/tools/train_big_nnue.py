@@ -185,9 +185,12 @@ def main():
     ap.add_argument("--lr", type=float, default=0.003)
     ap.add_argument("--eval-blend", type=float, default=0.75)
     ap.add_argument("--max-steps-per-epoch", type=int, default=4000)
+    ap.add_argument("--init-untrained", action="store_true",
+                    help="Export an untrained random v4 net ONLY if --out does not already exist (Skip Compute).")
     args = ap.parse_args()
 
     t0 = time.time()
+    hist = []
 
     def write_st(phase: str, running: bool, ep: int, pct: float, msg: str, extra: dict = None):
         if not args.status:
@@ -202,6 +205,7 @@ def main():
             "hidden": args.hidden,
             "progress_pct": round(float(pct), 1),
             "message": msg,
+            "history": hist[-200:],
             "elapsed_sec": round(time.time() - t0, 1),
             "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
@@ -210,6 +214,20 @@ def main():
         with open(args.status + ".tmp", "w") as sf:
             json.dump(blob, sf)
         os.replace(args.status + ".tmp", args.status)
+
+    if args.init_untrained:
+        if os.path.exists(args.out):
+            print(f"[NNUE-v4] Refusing --init-untrained: {args.out} already exists!", file=sys.stderr)
+            return 0
+        net = BigFactorizedNNUEv4(hidden=args.hidden)
+        net.export_v4(args.out)
+        write_st(
+            "skipped_untrained", False, 0, 0.0,
+            f"Initialized UNTRAINED random NNUE v4 ({args.hidden}-wide) — Training skipped (not recommended)!",
+            {"total_positions": 0, "untrained": True},
+        )
+        print(f"[NNUE-v4] Initialized untrained random net at {args.out}")
+        return 0
 
     if not os.path.exists(args.data):
         msg = f"Dataset not found: {args.data} (run Datagen first!)"
@@ -301,6 +319,13 @@ def main():
 
         pct = 3.0 + 95.0 * (ep / float(args.epochs))
         trn_avg = loss_sum / steps_per_ep
+        hist.append({
+            "epoch": ep,
+            "train_mse": round(trn_avg, 5),
+            "val_mse": round(val_mse, 5),
+            "best_val_mse": round(best_val, 5),
+            "lr": round(lr_now, 5),
+        })
         write_st(
             "training",
             True,
@@ -333,6 +358,11 @@ def main():
         f"Big NNUE v4 ({args.hidden}-wide) exported to {args.out}! Best val MSE={best_val:.5f}",
         {"total_positions": n_total, "best_val_mse": round(best_val, 5)},
     )
+    try:
+        import training_reports
+        training_reports.generate_all_reports()
+    except Exception:
+        pass
     print(f"[NNUE-v4] Exported {args.out} (best val MSE={best_val:.5f})!")
     return 0
 

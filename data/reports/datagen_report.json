@@ -1,0 +1,93 @@
+{
+  "id": "datagen",
+  "stage": "Tier 3 \u00b7 Step 2 \u00b7 Self-Play Datagen",
+  "title": "Self-Play Dataset Audit (datagen_v4.bin)",
+  "status": "complete",
+  "health": "ok",
+  "updated_at": "2026-11-27 00:57:40",
+  "summary": "Generated 51,231,650 quiet positions (588,063 games). Eval-to-outcome correlation r = +0.714.",
+  "metrics": [
+    {
+      "label": "Total Positions",
+      "value": "51,231,650"
+    },
+    {
+      "label": "Win / Draw / Loss",
+      "value": "37.2% / 26.8% / 36.1%"
+    },
+    {
+      "label": "Score \u2194 Result Corr",
+      "value": "+0.714"
+    },
+    {
+      "label": "Mean Win / Loss Eval",
+      "value": "+473 / -432 cp"
+    }
+  ],
+  "diagnosis": "Healthy self-play dataset! Balanced outcome distribution and strong +0.714 correlation. Tip: To climb past ~2,400 Elo toward 3,000+, run Pass-2 Datagen with your 1024 v4 NNUE or Singularity v5 as the teacher.",
+  "chart_series": {
+    "total_positions": 51231650,
+    "sample_size": 250000,
+    "win_pct": 37.2,
+    "draw_pct": 26.8,
+    "loss_pct": 36.1,
+    "mean_win_cp": 473.3,
+    "mean_loss_cp": -432.1,
+    "score_result_corr": 0.714,
+    "avg_ply": 77.9,
+    "eval_hist": {
+      "labels": [
+        "<-10",
+        "-10..-6",
+        "-6..-3",
+        "-3..-1.5",
+        "-1.5..-.5",
+        "-.5..0",
+        "0..+.5",
+        "+.5..1.5",
+        "+1.5..3",
+        "+3..6",
+        "+6..10",
+        ">+10"
+      ],
+      "counts": [
+        9980,
+        20023,
+        25534,
+        22212,
+        26108,
+        15273,
+        19928,
+        26911,
+        23280,
+        26618,
+        21242,
+        12891
+      ]
+    },
+    "ply_hist": {
+      "labels": [
+        "0-20",
+        "20-40",
+        "40-60",
+        "60-80",
+        "80-100",
+        "100-120",
+        "120-160",
+        "160+"
+      ],
+      "counts": [
+        27406,
+        40911,
+        38104,
+        36005,
+        31560,
+        26120,
+        31318,
+        18576
+      ]
+    },
+    "updated_at": "2026-11-27 00:57:40"
+  },
+  "next_step": "Use this dataset to train Big NNUE v4 in Tier 3 Step 3."
+}

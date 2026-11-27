@@ -246,18 +246,21 @@
       for (const p of presets) {
         let eloTag = "";
         if ((p.engine === "c" || p.engine === "az" || p.engine === "hybrid" || p.engine === "apex") && p.has_elo) {
-          eloTag = p.is_relative ? ` (${p.est_elo >= 0 ? "+" : ""}${p.est_elo} rel)` : ` (~${p.est_elo} Elo)`;
+          const calVal = p.calibrated && p.calibrated_elo > 0 ? p.calibrated_elo : p.est_elo;
+          const calMark = p.calibrated && p.calibrated_elo > 0 ? " Cal" : " Est";
+          eloTag = p.is_relative ? ` (${p.est_elo >= 0 ? "+" : ""}${p.est_elo} rel)` : ` (~${calVal}${calMark})`;
         }
         const prefix = p.engine === "c" ? "Titan-C " : "";
+        const partialTag = !p.locked && p.partial ? " [Partial]" : "";
         let label;
         if (p.locked) {
           label = p.needs_syzygy
-            ? `🔒 ${p.level} - ${p.name} (Needs 'make syzygy-5')`
+            ? `🔒 ${p.level} - ${p.name} (Needs Syzygy TB)`
             : p.needs_distill
-            ? `🔒 ${p.level} - ${p.name} (Locked • Needs NNUE Distillation)`
-            : `🔒 ${p.level} - ${p.name} (Locked • After Zero-C v2)`;
+            ? `🔒 ${p.level} - ${p.name} (Needs NNUE Distillation)`
+            : `🔒 ${p.level} - ${p.name} (Tier-Locked / Needs Compute)`;
         } else if (p.available) {
-          label = `${p.level} - ${prefix}${p.name}${eloTag}`;
+          label = `${p.level} - ${prefix}${p.name}${partialTag}${eloTag}`;
         } else {
           label = `${p.level} - ${prefix}${p.name} (unavailable)`;
         }
@@ -276,17 +279,29 @@
       $("sf-analyze-wrap").classList.remove("hidden");
     }
 
-    // Sync lock state of Hybrid Boss options in Elo Calculator & Gauntlet Scope
+    // Sync lock state & live names across all 15 calibratable bots in Elo Lab
     for (const p of presets) {
-      if (p.engine !== "hybrid") continue;
+      if (p.engine === "stockfish") continue;
       for (const selId of ["calc-bot", "gt-scope"]) {
         const sel = $(selId);
         if (!sel) continue;
         const opt = [...sel.options].find((o) => o.value === String(p.level));
         if (opt) {
           opt.disabled = Boolean(p.locked || !p.available);
-          if (!p.locked && p.available) {
-            opt.textContent = `⚡ ${p.name} (Hybrid Boss)`;
+          const calVal = p.calibrated && p.calibrated_elo > 0 ? p.calibrated_elo : p.est_elo;
+          const calMark = p.calibrated && p.calibrated_elo > 0 ? "Cal" : "Est";
+          const eloSuffix = p.has_elo && !p.is_relative ? ` (${calVal} ${calMark})` : "";
+          const pTag = !p.locked && p.partial ? " • Partial" : "";
+          if (p.locked) {
+            opt.textContent = `🔒 ${p.name} (${p.needs_syzygy ? "Needs Syzygy TB" : p.needs_distill ? "Needs Distill" : "Needs Prior Tier"})`;
+          } else if (p.engine === "apex") {
+            opt.textContent = `${p.level === 19 ? "👑" : "🔥"} ${p.name}${pTag}${eloSuffix}`;
+          } else if (p.engine === "hybrid") {
+            opt.textContent = `⚡ ${p.name}${pTag}${eloSuffix}`;
+          } else if (p.engine === "az") {
+            opt.textContent = `🧠 ${p.name}${pTag}${eloSuffix}`;
+          } else {
+            opt.textContent = `Titan-C L${p.level} — ${p.name}${eloSuffix}`;
           }
         }
       }
@@ -294,14 +309,20 @@
 
     const eloMini = $("home-elo-mini");
     if (eloMini && presets) {
-      const rated = presets.filter((p) => p.engine === "c" || (p.engine === "az" && p.available));
+      const rated = presets.filter(
+        (p) => (p.engine === "c" || p.engine === "az" || p.engine === "apex" || p.engine === "hybrid") && p.available && !p.locked
+      );
       if (rated.some((p) => p.has_elo)) {
         eloMini.innerHTML = rated
+          .slice(0, 8)
           .map(
-            (p) =>
-              `<div class="elo-mini-pill"><span>${
-                p.level === 13 ? "Zero-C v1 🏆" : p.engine === "az" ? "Zero-C v2" : `L${p.level} ${p.name}`
-              }</span><strong>${p.has_elo ? `~${p.est_elo}` : "—"}</strong></div>`
+            (p) => {
+              const showCal = p.calibrated && p.calibrated_elo > 0;
+              const val = showCal ? `${p.calibrated_elo} Cal` : `~${p.est_elo} Est`;
+              return `<div class="elo-mini-pill"><span>${
+                p.level === 13 ? "Zero-C v1" : p.level === 20 ? "Toy Net" : p.engine === "az" ? "Zero-C v2" : p.engine === "c" ? `L${p.level} ${p.name}` : p.name
+              }</span><strong>${p.has_elo ? val : "—"}</strong></div>`;
+            }
           )
           .join("");
       }
@@ -1730,23 +1751,33 @@
             ? `${lp.est_elo >= 0 ? "+" : ""}${lp.est_elo} (rel)`
             : `~${lp.est_elo} Elo`;
         }
-        const stCls =
-          lp.state === "running"
-            ? "gt-pill-running"
-            : lp.state === "done"
-            ? "gt-pill-done"
-            : "gt-pill-pending";
-        const stTxt =
-          lp.state === "running"
-            ? `Running (${lp.done}/${lp.total})`
-            : lp.state === "done"
-            ? "Done"
-            : lp.state === "stopped"
-            ? "Stopped"
-            : "Pending";
-        const botLabel = lp.engine === "az" ? `🧠 ${lp.name}` : `Titan-C L${lp.level} ${lp.name}`;
-        return `<tr>
-          <td><strong>${botLabel}</strong></td>
+        const avail = lp.available !== false;
+        const stCls = !avail
+          ? "gt-pill-locked"
+          : lp.state === "running"
+          ? "gt-pill-running"
+          : lp.state === "done"
+          ? "gt-pill-done"
+          : "gt-pill-pending";
+        const stTxt = !avail
+          ? "Locked (Needs Compute)"
+          : lp.state === "running"
+          ? `Running (${lp.done}/${lp.total})`
+          : lp.state === "done"
+          ? "Done"
+          : lp.state === "stopped"
+          ? "Stopped"
+          : "Ready";
+        const botLabel =
+          lp.engine === "az"
+            ? `🧠 ${lp.name}`
+            : lp.engine === "hybrid"
+            ? `⚡ ${lp.name}`
+            : lp.engine === "apex"
+            ? `👑 ${lp.name}`
+            : `Titan-C L${lp.level} ${lp.name}`;
+        return `<tr class="${!avail ? "gt-locked-row" : ""}">
+          <td><strong>${!avail ? "&#128274; " : ""}${botLabel}</strong></td>
           <td>${lp.opponent}</td>
           <td class="${stCls}">${stTxt}</td>
           <td>${wdl}</td>
@@ -1756,42 +1787,23 @@
       })
       .join("");
 
-    // Append the 4 Mythic Hybrid Bosses to the Arena Ladder (Locked until Zero-C v2 completes)
-    if (state && state.presets) {
-      const hybrids = state.presets.filter((p) => p.engine === "hybrid");
-      if (hybrids.length > 0) {
-        $("gt-table-body").innerHTML += hybrids
-          .map((h) => {
-            const locked = Boolean(h.locked || !h.available);
-            const lockTxt = h.needs_distill ? "Locked (Needs Distillation)" : "Locked (Zero-C v2)";
-            return `<tr class="${locked ? "gt-locked-row" : ""}">
-              <td><strong>${locked ? "&#128274;" : "&#9889;"} ${h.name}</strong></td>
-              <td>Stockfish (FIDE Elo)</td>
-              <td class="${locked ? "gt-pill-locked" : "gt-pill-pending"}">${locked ? lockTxt : "Ready"}</td>
-              <td>&mdash;</td>
-              <td>&mdash;</td>
-              <td><strong>${locked ? "Est. 2400–2550+" : "Unrated"}</strong></td>
-            </tr>`;
-          })
-          .join("");
-      }
-    }
-
     // Render Precision Elo Calculator Dashboard
     const cs = gs.calc;
     if (cs && cs.active) {
       $("calc-hero-bot").textContent = cs.subject_label || "Bot Calibration";
+      const sfMax = cs.sf_max_elo || 2850;
+      const anchorFmt = (a) => (a > sfMax ? "Stockfish Max (~3500)" : `SF ${a}`);
       if (cs.games_done > 0) {
         $("calc-hero-elo").textContent = `${cs.est_elo} Elo  (±${cs.ci_half})`;
-        const floorNote = cs.hit_sf_floor ? " • Below SF 1320 floor (extrapolated)" : "";
-        $("calc-hero-ci").textContent = `95% Confidence Interval: ${cs.ci_low} – ${cs.ci_high} Elo (target ±${cs.target_ci})${floorNote}`;
+        const floorNote = cs.hit_sf_floor ? ` • Below SF ${cs.sf_min_elo || 1350} floor (extrapolated)` : "";
+        $("calc-hero-ci").textContent = `95% Confidence Interval: ${cs.ci_low} – ${cs.ci_high} Elo (target ±${cs.target_ci} • SF UCI cap ${sfMax})${floorNote}`;
       } else {
         $("calc-hero-elo").textContent = "Calibrating...";
-        $("calc-hero-ci").textContent = `Starting adaptive Stockfish bracket at SF ${cs.current_anchor}...`;
+        $("calc-hero-ci").textContent = `Starting adaptive Stockfish bracket at ${anchorFmt(cs.current_anchor)} (SF limit cap ${sfMax})...`;
       }
       $("calc-st-games").textContent = `${cs.games_done} / ${cs.max_games}`;
       $("calc-st-wdl").textContent = `${cs.wins} / ${cs.draws} / ${cs.losses}`;
-      $("calc-st-anchor").textContent = cs.current_anchor ? `SF ${cs.current_anchor}` : "—";
+      $("calc-st-anchor").textContent = cs.current_anchor ? anchorFmt(cs.current_anchor) : "—";
       $("calc-st-status").textContent = gs.running
         ? "Bracketing..."
         : cs.converged
@@ -1808,8 +1820,9 @@
           .map((b) => {
             const n = b.wins + b.draws + b.losses;
             const sc = n > 0 ? (((b.wins + 0.5 * b.draws) / n) * 100).toFixed(1) + "%" : "—";
+            const lbl = b.anchor > sfMax ? "Stockfish Max (Unthrottled)" : `Stockfish ${b.anchor}`;
             return `<tr>
-              <td><strong>Stockfish ${b.anchor}</strong></td>
+              <td><strong>${lbl}</strong></td>
               <td>+${b.wins} =${b.draws} -${b.losses}</td>
               <td>${sc}</td>
               <td>${n}</td>
@@ -1884,8 +1897,40 @@
     }
   }
 
+  function activateStudioView(viewId, navPath = "/", wsTitle = "Studio Overview") {
+    const allViews = [
+      "home-screen",
+      "workspace",
+      "az-modal",
+      "gauntlet-modal",
+      "fighters-modal",
+      "history-modal",
+      "reports-view",
+    ];
+    for (const id of allViews) {
+      const el = $(id);
+      if (el) el.classList.toggle("hidden", id !== viewId);
+    }
+    if (viewId !== "az-modal") stopAzPolling();
+    if (viewId !== "gauntlet-modal") stopGauntletPolling();
+    if (viewId !== "workspace") {
+      stopSpectateTraining(false);
+      clearWatchTimer();
+    }
+    if ($("game-top-controls")) {
+      $("game-top-controls").classList.toggle("hidden", viewId !== "workspace");
+    }
+    if ($("topbar-ws-title")) $("topbar-ws-title").textContent = wsTitle;
+    if ($("sb-nav")) {
+      $("sb-nav")
+        .querySelectorAll(".sb-link[data-nav]")
+        .forEach((b) => b.classList.toggle("active", b.dataset.nav === navPath));
+    }
+  }
+
   async function openGauntletModal() {
-    $("gauntlet-modal").classList.remove("hidden");
+    const navP = gtActiveTab === "calc" ? "/elo-arena" : "/elo-arena";
+    activateStudioView("gauntlet-modal", navP, "Elo Lab — All 15 Engine Bots");
     syncUrl(gtActiveTab === "calc" ? "/elo-calculator" : "/elo-arena");
     const gs = await api("/api/gauntlet/status", "GET");
     renderGauntletStatus(gs);
@@ -1895,9 +1940,7 @@
   }
 
   function closeGauntletModal() {
-    $("gauntlet-modal").classList.add("hidden");
-    stopGauntletPolling();
-    syncUrl(underlyingBaseRoute());
+    showHomeMenu();
   }
 
   let spectateActive = false;
@@ -2666,12 +2709,12 @@
       tbody.innerHTML = `<tr><td colspan="7" class="empty-hint">No v2 checkpoints saved yet (Zero-C v1 Gen 4320 is immortalized in all bot dropdowns!).</td></tr>`;
     }
 
-    // Update Home Card 7 live summary too!
+    // Update Home Card live summary too!
     if ($("home-az-pill")) {
-      const compDone = Boolean(az.hybrids_unlocked || (az.completion && az.completion.is_complete));
+      const compDone = Boolean(az.v2_graduated || (az.completion && az.completion.is_complete));
       $("home-az-pill").textContent = compDone
-        ? `✅ Complete • Gen ${az.gen || 0}`
-        : `${isRunning ? "Training" : "Idle"} • Gen ${az.gen || 0}`;
+        ? `✅ Graduated • Gen ${az.gen || 0}`
+        : `${isRunning ? "Training" : az.gen > 0 ? "In Progress" : "Idle"} • Gen ${az.gen || 0}`;
       $("home-az-pill").classList.toggle("active", isRunning || compDone);
       $("home-az-gen").textContent = String(az.gen || 0);
       $("home-az-games").textContent = String(az.total_games || 0);
@@ -2694,7 +2737,7 @@
     const LR_TAIL_THRESH = Math.max(0.00026, baseLr * 0.175);
     const WINDOW = 50;
     const STRIDE = 150;
-    const flagExists = Boolean(az.hybrids_unlocked);
+    const flagExists = Boolean(az.v2_graduated);
 
     const g1Pass = totalGames >= MIN_GAMES;
     const g1Pct = Math.min(1, totalGames / MIN_GAMES);
@@ -2758,7 +2801,7 @@
     const panel = $("az-completion-panel");
     if (!panel) return;
     const comp = az.completion ? { ...az.completion } : computeClientCompletion(az);
-    if (az.hybrids_unlocked) {
+    if (az.v2_graduated) {
       comp.is_complete = true;
       comp.status = "complete";
       comp.progress_pct = 100;
@@ -2837,17 +2880,17 @@
     const unlockBtn = $("btn-az-unlock-now");
     const openHybBtn = $("btn-az-open-hybrids");
     if (unlockBtn) {
-      // Allow manual early graduation once at least 150k games are logged, or instant unlock if converged
-      const canManualUnlock = !comp.is_complete && (az.total_games || 0) >= 150000;
+      // Allow user to mark Phase 1 complete as soon as any real compute has run (> 0 games)
+      const canManualUnlock = !comp.is_complete && (az.total_games || 0) > 0;
       unlockBtn.classList.toggle("hidden", !canManualUnlock);
     }
     if (openHybBtn) {
       openHybBtn.classList.toggle("hidden", !comp.is_complete);
     }
 
-    if (comp.is_complete && !azWasCompleteToastShown && az.hybrids_unlocked) {
+    if (comp.is_complete && !azWasCompleteToastShown && az.v2_graduated) {
       azWasCompleteToastShown = true;
-      // Refresh presets once so the unlocked Hybrids become selectable everywhere immediately!
+      // Refresh presets once so graduated badges update everywhere immediately!
       api("/api/state", "GET").then((fresh) => {
         if (fresh && fresh.ok) {
           state = fresh;
@@ -2866,12 +2909,19 @@
     if (dStrip && dMsg && dStart && dStop) {
       const dist = az.distill || null;
       const dRunning = Boolean(az.distill_running || (dist && dist.running && az.distill_running !== false));
-      const v2Ready = Boolean(az.hybrids_unlocked);
+      const v2Ready = Boolean(az.v2_graduated);
+      const ph = (p3kLastData && p3kLastData.phases) || {};
       dStrip.classList.toggle("ready", v2Ready && !nnueDone);
-      dStrip.classList.toggle("done", nnueDone);
+      dStrip.classList.toggle("done", Boolean(ph.distill_done || nnueDone));
       dStart.classList.toggle("hidden", dRunning);
       dStop.classList.toggle("hidden", !dRunning);
       dStart.disabled = !v2Ready || isRunning;
+      if ($("btn-az-done-distill")) {
+        $("btn-az-done-distill").classList.toggle("hidden", dRunning || !nnueDone || Boolean(ph.distill_done));
+      }
+      if (typeof renderDistillChart === "function") {
+        renderDistillChart(dist);
+      }
 
       if (dRunning && dist) {
         dMsg.textContent = dist.message || "Distilling Zero-C v2 into AVX2 NNUE...";
@@ -2899,12 +2949,12 @@
         }
       } else if (v2Ready) {
         dMsg.innerHTML = isRunning
-          ? "Zero-C v2 is graduated! <strong>Pause self-play training</strong> to give Distillation full RTX GPU access."
-          : "Zero-C v2 is complete! Click <strong>&#9889; Distill Singularity v5</strong> to compress the 3.56M ResNet into a real 200ns AVX2 NNUE (<code>data/chess_net_zero_v4.nnue</code>, ~2&ndash;4 min).";
+          ? "Pause Zero-C v2 self-play first to give Knowledge Distillation full RTX GPU access (~2–4 min)."
+          : `Zero-C v2 graduated! Click <strong>&#9889; Distill Singularity v5</strong> (Tier 2 Capstone) to compress Zero-C v2 (Gen ${az.gen || 0}) into a 200ns AVX2 NNUE, then mark Done to unlock Tier 3!`;
         if (dBarWrap) dBarWrap.classList.add("hidden");
       } else {
         dMsg.innerHTML =
-          "Sealed until Zero-C v2 completes: compresses the 3.56M ResNet into a brand-new 200ns AVX2 CPU network (<code>data/chess_net_zero_v4.nnue</code>).";
+          "&#128274; Locked: Train Zero-C v2 (or click <strong>Graduate / Mark Phase Complete</strong> above once partial compute is done) to unlock Distillation!";
         if (dBarWrap) dBarWrap.classList.add("hidden");
       }
     }
@@ -2926,18 +2976,29 @@
       const pane = $(`r3k-pane-${id}`);
       if (pane) pane.classList.toggle("hidden", id !== valid);
     }
+    const routeMap = { map: "/road-to-3k", zeroc: "/zero-c", forge: "/project-3000", toy: "/toy-net" };
+    const titleMap = {
+      map: "Campaign Roadmap",
+      zeroc: "Tier 2: Zero-C & Singularity",
+      forge: "Tier 3: Apex & Hybrid Forge",
+      toy: "15-Min Toy Net Sandbox",
+    };
+    const r = routeMap[valid] || "/road-to-3k";
+    if ($("topbar-ws-title")) $("topbar-ws-title").textContent = titleMap[valid] || "Pipeline";
+    if ($("sb-nav")) {
+      $("sb-nav")
+        .querySelectorAll(".sb-link[data-nav]")
+        .forEach((b) => b.classList.toggle("active", b.dataset.nav === r));
+    }
     if (updateUrl && !$("az-modal").classList.contains("hidden")) {
-      const routeMap = {
-        map: "/road-to-3k",
-        zeroc: "/zero-c",
-        forge: "/project-3000",
-        toy: "/toy-net",
-      };
-      syncUrl(routeMap[valid] || "/road-to-3k");
+      syncUrl(r);
     }
     if (valid === "zeroc" && azLastData) {
       updateAzChartsOnly(azLastData, true);
+      if (azLastData.distill) renderDistillChart(azLastData.distill);
     }
+    if (valid === "forge" && p3kLastData) renderP3kStatus(p3kLastData);
+    if (valid === "toy" && toyLastData) renderToyStatus(toyLastData);
   }
 
   async function pollAzStatus() {
@@ -2965,16 +3026,24 @@
   }
 
   async function openAzModal(initialTab = "map") {
-    $("az-modal").classList.remove("hidden");
-    setR3kTab(initialTab, true);
+    const valid = ["map", "zeroc", "forge", "toy"].includes(initialTab) ? initialTab : "map";
+    const navMap = { map: "/road-to-3k", zeroc: "/zero-c", forge: "/project-3000", toy: "/toy-net" };
+    const titleMap = {
+      map: "Campaign Roadmap — 3-Tier AI Studio",
+      zeroc: "Tier 2: Zero-C v2 & Singularity v5",
+      forge: "Tier 3: Mythic Hybrids & Apex Forge",
+      toy: "Zero-C Lite — 15-Min Toy Net Sandbox",
+    };
+    activateStudioView("az-modal", navMap[valid] || "/road-to-3k", titleMap[valid] || "Training Pipeline");
+    setR3kTab(valid, true);
     await pollAzStatus();
     startAzPolling();
   }
 
   function closeAzModal(skipRouteSync = false) {
-    $("az-modal").classList.add("hidden");
+    if ($("az-modal")) $("az-modal").classList.add("hidden");
     stopAzPolling();
-    if (!skipRouteSync) syncUrl(underlyingBaseRoute());
+    if (!skipRouteSync) showHomeMenu();
   }
 
   // ==========================================================================
@@ -3128,10 +3197,13 @@
   });
   $("btn-calc-start").addEventListener("click", async () => {
     const rawBot = parseInt($("calc-bot").value, 10);
-    const isV1 = rawBot === 13;
-    const subjLevel = isV1 ? 7 : rawBot;
-    const azCkpt = isV1 ? "data/az_v1_gen4320/latest.pt" : "";
-    const customElo = parseInt($("calc-custom-elo").value, 10) || 1500;
+    const subjLevel = rawBot;
+    const azCkpt = rawBot === 13 ? "data/az_v1_gen4320/latest.pt" : rawBot === 20 ? "data/az_toy/latest.pt" : "";
+    let customElo = parseInt($("calc-custom-elo").value, 10) || 1500;
+    if (rawBot === 0 && customElo > 2600) {
+      customElo = 2600;
+      $("calc-custom-elo").value = "2600";
+    }
     const targetCi = parseInt($("calc-target-ci").value, 10) || 90;
     const maxGames = parseInt($("calc-max-games").value, 10) || 40;
     const threads = parseInt($("calc-threads").value, 10) || 0;
@@ -3255,7 +3327,23 @@
   // PGN modal
   $("btn-pgn-current").addEventListener("click", async () => {
     const res = await api("/api/pgn", "GET");
-    if (res.ok) $("pgn-textarea").value = res.pgn;
+    if (!res || !res.ok) return;
+    if (res.has_moves) {
+      $("pgn-textarea").value = res.pgn;
+      if ($("pgn-modal-hint")) {
+        $("pgn-modal-hint").textContent = `Loaded active game (${res.plies} plies).`;
+      }
+    } else if (res.last_game_pgn) {
+      $("pgn-textarea").value = res.last_game_pgn;
+      if ($("pgn-modal-hint")) {
+        $("pgn-modal-hint").textContent = "Current board had 0 moves — filled your most recent saved game instead!";
+      }
+    } else {
+      $("pgn-textarea").value = res.pgn || "";
+      if ($("pgn-modal-hint")) {
+        $("pgn-modal-hint").textContent = "No moves have been played in the current game yet.";
+      }
+    }
   });
   $("btn-pgn-copy").addEventListener("click", async () => {
     const val = $("pgn-textarea").value;
@@ -3351,20 +3439,20 @@
 
   function showBoardWorkspace(skipRouteSync = false) {
     currentScreen = "board";
-    $("home-screen").classList.add("hidden");
-    $("workspace").classList.remove("hidden");
-    $("game-top-controls").classList.remove("hidden");
+    const isPz = state && state.mode === "puzzle";
+    const isAn = state && state.mode === "analysis";
+    activateStudioView(
+      "workspace",
+      isPz ? "/puzzles" : "/play",
+      isPz ? "Tactical Puzzles" : isAn ? "Analysis Board" : "Play & Analyze"
+    );
     $("btn-home").classList.remove("btn-toggled");
     if (!skipRouteSync) syncUrl(underlyingBaseRoute());
   }
 
   async function showHomeMenu() {
     currentScreen = "home";
-    stopSpectateTraining(false);
-    clearWatchTimer();
-    $("workspace").classList.add("hidden");
-    $("home-screen").classList.remove("hidden");
-    $("game-top-controls").classList.add("hidden");
+    activateStudioView("home-screen", "/", "Studio Overview");
     $("btn-home").classList.add("btn-toggled");
     syncUrl("/");
     await refreshHomeDashboard();
@@ -3602,6 +3690,7 @@
 
   // ---- Game History Logic ----
   async function openHistoryModal() {
+    activateStudioView("history-modal", "/history", "Game Archive");
     syncUrl("/history");
     const hData = await api("/api/history", "GET");
     if (hData && hData.ok) {
@@ -3614,7 +3703,6 @@
     }
     $("hist-search").value = "";
     renderHistoryModalTable();
-    $("history-modal").classList.remove("hidden");
   }
 
   function renderHistoryModalTable() {
@@ -4098,16 +4186,16 @@
       epithet: "The Tabula Rasa Prodigy",
       botName: "Zero-C v2 (AlphaZero)",
       faction: "zero",
-      factionLabel: "Zero-C Neural",
+      factionLabel: "Zero-C Neural Guild",
       accent: "#d2a8ff",
-      defaultElo: "Training Live!",
+      defaultElo: "Est. ~1350+ (Live)",
       quote: "“Nobody taught me chess. I played two hundred thousand games with myself and discovered beauty.”",
       style: "Alien Positional Intuition & Sacrifices",
       weapon: "10×128 SE-ResNet + C Batched MCTS + Moves-Left Head",
       stats: { tactics: 82, intuition: 96, speed: 78, creativity: 99, endgame: 86 },
       lore: [
         "Nova woke up in complete darkness knowing zero openings, zero piece values, and zero human textbooks—only the bare legal rules of chess. Through hundreds of thousands of Full-Throttle overnight self-play battles on RTX Tensor Cores, she invented castling, fianchettoes, and king attacks all by herself.",
-        "Unlike classical engines that count pawns like accountants, Nova feels the board as shimmering waves of Win/Draw/Loss probability. She will calmly sacrifice an exchange just to trap your bishop for twenty moves—and she's still growing stronger every single generation."
+        "Unlike classical engines that count pawns like accountants, Nova feels the board as shimmering waves of Win/Draw/Loss probability. Completing Zero-C v2 unlocks Distillation for Singularity v5 (#17), finishing Tier 2!"
       ],
       avatar: `<svg viewBox="0 0 64 64"><defs><radialGradient id="av-zv2" cx="50%" cy="40%" r="65%"><stop offset="0%" stop-color="#3b1d5e"/><stop offset="100%" stop-color="#0c0a16"/></radialGradient></defs><rect width="64" height="64" fill="url(#av-zv2)"/><circle cx="32" cy="32" r="21" fill="none" stroke="#d2a8ff" stroke-width="1.6" stroke-dasharray="4 3"/><circle cx="32" cy="33" r="13" fill="#1b1430" stroke="#79c0ff" stroke-width="1.8"/><polygon points="32,18 35,25 32,29 29,25" fill="#f778ba"/><circle cx="27" cy="34" r="2.6" fill="#79c0ff"/><circle cx="37" cy="34" r="2.6" fill="#79c0ff"/><path d="M26 42q6 3 12 0" fill="none" stroke="#d2a8ff" stroke-width="2" stroke-linecap="round"/><circle cx="14" cy="18" r="2" fill="#f778ba"/><circle cx="50" cy="20" r="2" fill="#79c0ff"/><circle cx="49" cy="46" r="1.8" fill="#d2a8ff"/></svg>`
     },
@@ -4118,9 +4206,9 @@
       epithet: "The Gen-4320 Elder",
       botName: "Zero-C v1 Champion (Gen 4320)",
       faction: "zero",
-      factionLabel: "Zero-C Neural",
+      factionLabel: "Zero-C Neural Guild",
       accent: "#f778ba",
-      defaultElo: "~1450–1600 Elo",
+      defaultElo: "Est. ~1350–1500 Elo",
       quote: "“Four thousand three hundred and twenty generations forged in fire. Come test the original.”",
       style: "Relentless First-Gen Neural Veteran",
       weapon: "Archived 6×96 SE-ResNet (Gen 4320 • 1000 Sims)",
@@ -4132,22 +4220,64 @@
       avatar: `<svg viewBox="0 0 64 64"><defs><radialGradient id="av-zv1" cx="50%" cy="35%" r="70%"><stop offset="0%" stop-color="#4d193a"/><stop offset="100%" stop-color="#110b14"/></radialGradient></defs><rect width="64" height="64" fill="url(#av-zv1)"/><path d="M14 40c-2-14 6-24 18-26 12 2 20 12 18 26" fill="none" stroke="#f0c14b" stroke-width="2.4" stroke-dasharray="5 3"/><circle cx="32" cy="35" r="13" fill="#231326" stroke="#f778ba" stroke-width="1.8"/><path d="M22 21l5 4 5-7 5 7 5-4-2 6H24z" fill="#f0c14b"/><circle cx="27" cy="35" r="2.5" fill="#ffd97d"/><circle cx="37" cy="35" r="2.5" fill="#ffd97d"/><path d="M26 42h12" stroke="#f778ba" stroke-width="2" stroke-linecap="round"/></svg>`
     },
     {
+      id: "zero-toy",
+      level: 20,
+      name: "Zero-C Lite (Toy Net)",
+      epithet: "15-Min Sandbox Sprinter",
+      botName: "Zero-C Lite (Toy Net)",
+      faction: "zero",
+      factionLabel: "Zero-C Neural Guild",
+      accent: "#39c5cf",
+      defaultElo: "🔒 Needs Toy Net Sprint",
+      quote: "“Give me one coffee break and a clean GPU, and I'll reinvent openings from pure chaos.”",
+      style: "Rapid Tabula Rasa Sandbox",
+      weapon: "Isolated Tiny 4×64 / Standard 6×96 SE-ResNet (data/az_toy/)",
+      stats: { tactics: 54, intuition: 66, speed: 92, creativity: 88, endgame: 56 },
+      locked: true,
+      lore: [
+        "Isolated cleanly inside `data/az_toy/`, Zero-C Lite lets you watch neural self-play unfold end-to-end in ~15 minutes (60 generations) without touching your main Zero-C v2 or Apex Forge weights.",
+        "Runs live in the 15-Min Toy Net lab and immediately becomes playable and testable inside the Elo Lab as soon as Gen 0 exists."
+      ],
+      avatar: `<svg viewBox="0 0 64 64"><rect width="64" height="64" fill="#0d1724"/><circle cx="32" cy="32" r="21" fill="#13253b" stroke="#39c5cf" stroke-width="2"/><polygon points="34,12 22,34 32,34 29,52 43,29 33,29" fill="#ffd97d" stroke="#39c5cf" stroke-width="1"/></svg>`
+    },
+    {
+      id: "hybrid-nnue",
+      level: 17,
+      name: "Singularity v5",
+      epithet: "Zero-C Guild Capstone",
+      botName: "Singularity v5 (Distilled NNUE)",
+      faction: "zero",
+      factionLabel: "Zero-C Neural Guild",
+      accent: "#79c0ff",
+      defaultElo: "🔒 Tier 2 Capstone (Needs Distill)",
+      quote: "“All of Nova's neural vision, compressed into 200-nanosecond AVX2 steel.”",
+      style: "Distilled Neural Grandmaster Fusion",
+      weapon: "Zero-C Distilled Knowledge + AVX2 Alpha-Beta Core",
+      stats: { tactics: 96, intuition: 97, speed: 100, creativity: 94, endgame: 95 },
+      locked: true,
+      lore: [
+        "SEALED CAPSTONE OF TIER 2 — Singularity v5 is the final evolution of the Zero-C Neural Guild. Once Nova finishes Zero-C v2 self-play, Knowledge Distillation compresses her 3.56M-parameter ResNet directly into a fast AVX2 CPU NNUE (`data/chess_net_zero_v4.nnue`).",
+        "Completing and marking Singularity v5 Done finishes Tier 2 and unlocks Tier 3 (Mythic Hybrids & Apex Forge) — where Singularity immediately steps up as your strongest neural teacher for Apex's self-play Datagen!"
+      ],
+      avatar: `<svg viewBox="0 0 64 64"><defs><radialGradient id="av-sing" cx="50%" cy="50%" r="55%"><stop offset="0%" stop-color="#ffffff"/><stop offset="45%" stop-color="#79c0ff"/><stop offset="100%" stop-color="#0a1020"/></radialGradient></defs><rect width="64" height="64" fill="#090d18"/><circle cx="32" cy="32" r="23" fill="none" stroke="#79c0ff" stroke-width="1.6" stroke-dasharray="3 3"/><polygon points="32,8 50,32 32,56 14,32" fill="url(#av-sing)" stroke="#f0f6fc" stroke-width="1.8"/><polygon points="32,19 41,32 32,45 23,32" fill="#0d1526"/><circle cx="32" cy="32" r="4.5" fill="#ffd97d"/></svg>`
+    },
+    {
       id: "hybrid-dual",
       level: 14,
       name: "Gemini Arbiter",
       epithet: "The Dual-Brain Sovereign",
       botName: "Gemini Arbiter (Dual-Brain)",
       faction: "hybrid",
-      factionLabel: "Mythic Hybrid Boss",
+      factionLabel: "Mythic Hybrids",
       accent: "#f0c14b",
-      defaultElo: "🔒 Est. 2400–2480 Elo",
+      defaultElo: "🔒 Unlocks in Tier 3 Forge",
       quote: "“Titan calculates the steel. Nova reads the stars. I choose the truth between them.”",
       style: "Tactically Unblunderable Neural Arbiter",
       weapon: "Multi-PV Alpha-Beta + GPU Policy/WDL Selector",
       stats: { tactics: 97, intuition: 96, speed: 88, creativity: 94, endgame: 96 },
       locked: true,
       lore: [
-        "SEALED IN THE VAULT — When Zero-C v2 completes her training, the first of the four Mythic Hybrids awakens. Gemini Arbiter splits its consciousness across CPU and GPU simultaneously: Titan-C's 4-thread alpha-beta sword proposes the Top-5 tactically sound candidate moves, and Nova's 10×128 neural brain votes among the tied equals.",
+        "TIER 3 MYTHIC HYBRID — Unlocks once Tier 2 (Zero-C v2 + Singularity v5) is complete and you begin Tier 3 Apex Forge. Gemini Arbiter splits its consciousness across CPU and GPU simultaneously: Titan-C's 4-thread alpha-beta sword proposes the Top-5 tactically sound candidate moves, and finished Zero-C v2 votes among the tied equals.",
         "If one move wins a rook, Titan overrules immediately. If three positional moves look equal to raw calculation, Gemini lets neural intuition break the tie—combining zero-blunder steel with grandmaster positional taste."
       ],
       avatar: `<svg viewBox="0 0 64 64"><rect width="64" height="64" fill="#13111c"/><path d="M32 10A22 22 0 0 0 32 54Z" fill="#1b3a29"/><path d="M32 10A22 22 0 0 1 32 54Z" fill="#3a1c54"/><circle cx="32" cy="32" r="22" fill="none" stroke="#f0c14b" stroke-width="2.4"/><line x1="32" y1="10" x2="32" y2="54" stroke="#f0c14b" stroke-width="2"/><rect x="19" y="29" width="10" height="4" rx="2" fill="#3fb950"/><circle cx="40" cy="31" r="3.4" fill="#d2a8ff"/><path d="M24 44h16" stroke="#f0c14b" stroke-width="2" stroke-linecap="round"/></svg>`
@@ -4159,17 +4289,17 @@
       epithet: "The Neural-Guided Seer",
       botName: "Oracle of LMR (Neural Alpha-Beta)",
       faction: "hybrid",
-      factionLabel: "Mythic Hybrid Boss",
+      factionLabel: "Mythic Hybrids",
       accent: "#ffa657",
-      defaultElo: "🔒 Est. 2420–2500 Elo",
+      defaultElo: "🔒 Unlocks in Tier 3 Forge",
       quote: "“Why search a million dead branches when my third eye already saw the winning move?”",
       style: "Hyper-Deep Focused Calculator",
       weapon: "GPU Root Policy Ordering + Deep Alpha-Beta Pruning",
       stats: { tactics: 98, intuition: 93, speed: 91, creativity: 92, endgame: 95 },
       locked: true,
       lore: [
-        "SEALED IN THE VAULT — Cloaked in burning amber circuits, the Oracle of LMR uses Zero-C v2's neural Policy head like a laser sight. Before a single deep variation begins, the Oracle scores every legal move by neural intuition and orders the search tree so the strongest human-like ideas are explored at maximum depth.",
-        "Quiet positional sacrifices that normal alpha-beta engines prune away with Late Move Reductions get promoted straight to the front of the queue—letting the Oracle find chilling, deep combinations no classical search would ever check."
+        "TIER 3 MYTHIC HYBRID — Awakens alongside Gemini & Omega when Tier 2 finishes and Tier 3 Apex Forge begins. Cloaked in burning amber circuits, the Oracle of LMR uses Zero-C v2's finished neural Policy head like a laser sight to order alpha-beta search moves.",
+        "Quiet positional sacrifices that normal alpha-beta engines prune away with Late Move Reductions get promoted straight to the front of the queue—letting the Oracle find deep combinations no classical search would check."
       ],
       avatar: `<svg viewBox="0 0 64 64"><rect width="64" height="64" fill="#1a120d"/><path d="M14 54L22 16l10-8 10 8 8 38z" fill="#2a1d17" stroke="#ffa657" stroke-width="2"/><ellipse cx="32" cy="28" rx="11" ry="6.5" fill="#0d0a08" stroke="#f0c14b" stroke-width="1.8"/><circle cx="32" cy="28" r="3.8" fill="#ffa657"/><circle cx="32" cy="28" r="1.6" fill="#fff"/><path d="M22 42l10-4 10 4" fill="none" stroke="#d2a8ff" stroke-width="1.8"/></svg>`
     },
@@ -4180,58 +4310,38 @@
       epithet: "The Six-Winged Seraph",
       botName: "Zero-C Omega (Hybrid MCTS)",
       faction: "hybrid",
-      factionLabel: "Mythic Hybrid Boss",
+      factionLabel: "Mythic Hybrids",
       accent: "#ff7b72",
-      defaultElo: "🔒 Est. 2450–2550 Elo",
+      defaultElo: "🔒 Unlocks in Tier 3 Forge",
       quote: "“My wings are pure AlphaZero. My blade is tactical certainty.”",
       style: "AlphaZero Creativity + Zero-Blunder Tactical Verification",
       weapon: "Batched GPU MCTS + Exact Tactical Refutation Guard",
       stats: { tactics: 96, intuition: 99, speed: 84, creativity: 100, endgame: 94 },
       locked: true,
       lore: [
-        "SEALED IN THE VAULT — This is Nova's ascended final form. Zero-C Omega lets the full 10×128 MCTS tree roam free in its wildest, most breathtaking AlphaZero glory—but pairs every root move with Titan-C's tactical verification sentinel.",
-        "If an ambitious neural sacrifice has a hidden 6-ply tactical refutation, the sentinel vetoes it instantly; if the sacrifice survives Titan's fire, Omega unleashes it with full conviction. Pure artistry, zero blind spots."
+        "TIER 3 MYTHIC HYBRID — Nova's ascended fusion with Titan-C's search sentinel, unlocking when Tier 2 completes and you enter Tier 3 Apex Forge. Zero-C Omega lets the full 10×128 MCTS tree roam free in its wildest AlphaZero style—but pairs every root move with Titan-C's tactical verification check.",
+        "If an ambitious neural sacrifice has a hidden 6-ply tactical refutation, the sentinel vetoes it instantly; if the sacrifice survives Titan's fire, Omega unleashes it with full conviction."
       ],
       avatar: `<svg viewBox="0 0 64 64"><rect width="64" height="64" fill="#1b0e14"/><path d="M6 26l16 6-14 8zM58 26l-16 6 14 8zM10 14l14 12-12 2zM54 14l-14 12 12 2z" fill="#ff7b72" opacity="0.82"/><circle cx="32" cy="34" r="13" fill="#23121c" stroke="#ffd97d" stroke-width="2"/><polygon points="32,20 36,30 32,36 28,30" fill="#ffd97d"/><circle cx="27" cy="35" r="2.2" fill="#79c0ff"/><circle cx="37" cy="35" r="2.2" fill="#79c0ff"/><path d="M27 42h10" stroke="#ff7b72" stroke-width="2" stroke-linecap="round"/></svg>`
-    },
-    {
-      id: "hybrid-nnue",
-      level: 17,
-      name: "Singularity v5",
-      epithet: "The Distilled Apex",
-      botName: "Singularity v5 (Distilled NNUE)",
-      faction: "hybrid",
-      factionLabel: "Mythic Hybrid Boss",
-      accent: "#79c0ff",
-      defaultElo: "🔒 Est. 2500–2650+ Elo",
-      quote: "“Two bloodlines. One mind. Pure lightning.”",
-      style: "Transcendent Grandmaster Fusion",
-      weapon: "Zero-C Distilled Knowledge + AVX2 Alpha-Beta Core",
-      stats: { tactics: 100, intuition: 99, speed: 100, creativity: 96, endgame: 99 },
-      locked: true,
-      lore: [
-        "SEALED IN THE VAULT — The ultimate boss of Chess-in-C. Singularity v5 distills everything Nova learned across half a million self-play games straight into Titan-C's blazing-fast C11 alpha-beta search, marrying deep neural king-safety intuition with millions of nodes per second.",
-        "When Zero-C v2 finishes her final generation and the seal breaks, Singularity v5 steps out of the forge to challenge Stockfish's highest ranks—representing the combined peak of human C engineering and pure tabula rasa machine intelligence."
-      ],
-      avatar: `<svg viewBox="0 0 64 64"><defs><radialGradient id="av-sing" cx="50%" cy="50%" r="55%"><stop offset="0%" stop-color="#ffffff"/><stop offset="45%" stop-color="#79c0ff"/><stop offset="100%" stop-color="#0a1020"/></radialGradient></defs><rect width="64" height="64" fill="#090d18"/><circle cx="32" cy="32" r="23" fill="none" stroke="#79c0ff" stroke-width="1.6" stroke-dasharray="3 3"/><polygon points="32,8 50,32 32,56 14,32" fill="url(#av-sing)" stroke="#f0f6fc" stroke-width="1.8"/><polygon points="32,19 41,32 32,45 23,32" fill="#0d1526"/><circle cx="32" cy="32" r="4.5" fill="#ffd97d"/></svg>`
     },
     {
       id: "apex-pure",
       level: 18,
       name: "Apex-C (Pure)",
-      epithet: "The Project-3000 Vanguard",
-      botName: "Apex-C 3000 (Pure • No TB)",
+      epithet: "Tier 3 Apex Vanguard",
+      botName: "Apex-C (Pure • No TB)",
       faction: "apex",
-      factionLabel: "Project 3000 Apex",
+      factionLabel: "Tier 3 Apex Forge",
       accent: "#ff9e64",
-      defaultElo: "Target 3000+ (Pure)",
+      defaultElo: "🔒 Unlocks in Tier 3 Forge",
       quote: "“No tablebases. No crutches. Pure C11 steel, full Correction History, and raw search depth.”",
       style: "Relentless Modern Super-GM Search",
       weapon: "Full CorrHist Suite + Capture/Cut LMR + 16×768→1024 NNUE v4",
       stats: { tactics: 99, intuition: 96, speed: 100, creativity: 88, endgame: 96 },
+      locked: true,
       lore: [
-        "Forged specifically to shatter the 3,000-Elo barrier without a single external tablebase byte. Apex-C Pure wields the full modern search arsenal: Pawn + Non-Pawn + Minor + Major + Continuation Correction History, Capture & Cut-Node LMR, Low-Ply History, and High-Depth Null-Move Verification.",
-        "Playable tonight with the upgraded Project 3000 search, and built to seamlessly swallow a 16×768→1024 NNUE v4 brain (`data/titan_v6_1024.nnue`) trained on 50M+ self-play positions from `build/datagen`."
+        "TIER 3 APEX FORGE — Forged once Tier 2 (Zero-C v2 + Singularity v5) is complete so training builds on your strongest completed neural model. Apex-C Pure wields Full Correction History (Pawn/Non-Pawn/Minor/Major/Cont), Capture & Cut-Node LMR, Low-Ply History, and High-Depth Null-Move Verification.",
+        "Starts on Singularity/v3 prototype weights (~2200 Est) and climbs dynamically as you forge Datagen (`Singularity v5` -> `Pass 2 v4`), Big 16×768→1024 NNUE v4 (`data/titan_v6_1024.nnue`), and SPSA tuning!"
       ],
       avatar: `<svg viewBox="0 0 64 64"><defs><radialGradient id="av-apx1" cx="50%" cy="35%" r="70%"><stop offset="0%" stop-color="#5c280a"/><stop offset="100%" stop-color="#0d0a0c"/></radialGradient></defs><rect width="64" height="64" fill="url(#av-apx1)"/><polygon points="32,7 53,24 46,55 18,55 11,24" fill="#1d181e" stroke="#ff9e64" stroke-width="2.2"/><polygon points="32,16 42,32 32,46 22,32" fill="#ff9e64"/><polygon points="32,23 37,32 32,40 27,32" fill="#fff3c4"/><path d="M19 29l7 2-5 4zM45 29l-7 2 5 4z" fill="#ff7b72"/></svg>`
     },
@@ -4240,19 +4350,19 @@
       level: 19,
       name: "Apex-C + Syzygy",
       epithet: "The 5-Piece Endgame God",
-      botName: "Apex-C 3000 + Syzygy (5-Man TB)",
+      botName: "Apex-C + Syzygy (5-Man TB)",
       faction: "apex",
-      factionLabel: "Project 3000 Apex",
+      factionLabel: "Tier 3 Apex Forge",
       accent: "#39c5cf",
-      defaultElo: "🔒 Target 3100+ (5-Man TB)",
+      defaultElo: "🔒 Unlocks in Tier 3 + Syzygy",
       quote: "“Trade down to five pieces and the game is mathematically over. I already know the exact mate in 47.”",
       style: "Super-GM Search + Exact 5-Man Endgame Perfection",
       weapon: "Apex-C Search + 16×768→1024 NNUE v4 + 5-Piece Syzygy WDL/DTZ",
       stats: { tactics: 99, intuition: 96, speed: 100, creativity: 88, endgame: 100 },
       locked: true,
       lore: [
-        "Apex-C's twin colossus, fused with the complete 3-4-5 piece Syzygy Endgame Tablebase vault (`data/syzygy/`). Keep it side-by-side against Pure Apex-C to watch exactly how much mathematical endgame perfection adds in real matches.",
-        "Run `make syzygy-5` (~939 MB resumable download) to break the seal and unlock instantaneous WDL/DTZ endgame perfection whenever 5 or fewer pieces remain on the board!"
+        "TIER 3 APEX COLOSSUS — Same engine & 1024 NNUE v4 brain as Apex-C Pure, fused with the complete 3-4-5 piece Syzygy Endgame Tablebase vault (`data/syzygy/`). Compare calibrated Elo side-by-side against Pure Apex-C to watch exact endgame perfection in action.",
+        "Complete Tier 2 and download 5-Man Syzygy (Tier 3 Step 1, ~939 MB) to unlock exact WDL/DTZ lookups for any position with 5 or fewer pieces!"
       ],
       avatar: `<svg viewBox="0 0 64 64"><defs><radialGradient id="av-apx2" cx="50%" cy="35%" r="70%"><stop offset="0%" stop-color="#0e4554"/><stop offset="100%" stop-color="#080d14"/></radialGradient></defs><rect width="64" height="64" fill="url(#av-apx2)"/><polygon points="32,7 53,24 46,55 18,55 11,24" fill="#132230" stroke="#39c5cf" stroke-width="2.2"/><circle cx="32" cy="31" r="11" fill="none" stroke="#ffd97d" stroke-width="2"/><polygon points="32,20 37,31 32,42 27,31" fill="#39c5cf"/><circle cx="32" cy="31" r="3" fill="#ffffff"/></svg>`
     },
@@ -4395,14 +4505,23 @@
     const pct = isSyz
       ? Math.min(100, Math.round(12 + (syzDone ? 18 : 0) + 24 * (dgPct / 100) + (spsaDone ? 12 : 0) + (nnDone ? 34 : 0)))
       : Math.min(100, Math.round(15 + 30 * (dgPct / 100) + (spsaDone ? 15 : 0) + (nnDone ? 40 : 0)));
-    const elo = 2580 + (isSyz && syzDone ? 70 : 0) + (spsaDone ? 60 : 0) + (nnDone ? 410 : 0);
-    const targetElo = isSyz ? 3120 : 3050;
+
+    const calibratedElo = p && p.calibrated && p.calibrated_elo > 0 ? p.calibrated_elo : 0;
+    const calibGames = (p && p.calib_games) || 0;
+    const estElo =
+      p && p.est_elo > 0
+        ? p.est_elo
+        : 2200 + (nnDone ? 120 : 0) + (spsaDone ? 80 : 0) + (isSyz && syzDone ? 45 : 0);
+    const elo = calibratedElo > 0 ? calibratedElo : estElo;
+    const eloIsCalibrated = calibratedElo > 0;
+    const eloLabel = eloIsCalibrated ? `${elo} Cal (${calibGames}g)` : `Est. ~${estElo}`;
+    const targetElo = Math.max(elo + (isMax ? 0 : 120), isSyz ? 2450 : 2400);
     const isMax = stage >= maxStage;
 
     let tier = (p && p.apex_tier) || "Prototype";
     if (!p || !p.apex_tier) {
       if (isSyz && !syzDone) tier = "Sealed (Needs TB)";
-      else if (isMax) tier = isSyz ? "GODMODE 3100" : "APEX 3000";
+      else if (isMax) tier = isSyz ? "GODMODE + TB" : "APEX FORGED";
       else if (nnDone) tier = isSyz ? "v4 + TB Awakened" : "v4 Awakened";
       else if (stage >= maxStage - 1) tier = isSyz ? "Forged + TB" : "Forged";
       else if (stage >= 2) tier = isSyz ? "TB Prototype" : "Tempered";
@@ -4429,8 +4548,8 @@
       tasks.push({
         label: "5-Piece Syzygy Tablebases",
         detail: syzDone
-          ? `${syzFiles > 0 ? syzFiles : 290}/290 files (+70 Elo)`
-          : `${syzFiles}/290 files — Download in 3000 Forge`,
+          ? `${syzFiles > 0 ? syzFiles : 290}/290 files (exact <=5-man WDL/DTZ)`
+          : `${syzFiles}/290 files — Download in Tier 3 Forge`,
         done: syzDone,
         partial: syzDone ? 100 : Math.round((syzFiles / 290) * 100),
       });
@@ -4442,23 +4561,23 @@
           ? `${(dgPos / 1e6).toFixed(1)}M positions ready`
           : dgPos > 0
           ? `${(dgPos / 1e6).toFixed(2)}M / 25.0M (${dgPct}%) — feeds NNUE v4`
-          : "0 / 25.0M — Start in 3000 Forge",
+          : "0 / 25.0M — Start in Tier 3 Forge (Pass 1 uses Singularity v5!)",
         done: dgDone,
         partial: dgPct,
       },
       {
-        label: "SPSA Search Parameter Tuning",
-        detail: spsaDone ? "Tuned (+60 Elo)" : "Pending — Run SPSA in 3000 Forge (+60 Elo)",
-        done: spsaDone,
-        partial: spsaDone ? 100 : 0,
-      },
-      {
         label: "16×768→1024 Big NNUE v4 Brain",
         detail: nnDone
-          ? "Forged & Active (+410 Elo!)"
-          : "Pending — Currently using v3 NNUE fallback (+410 Elo when forged!)",
+          ? "Forged & Active (1024-wide v4)"
+          : "Pending — Using Singularity/v3 fallback until forged",
         done: nnDone,
         partial: nnDone ? 100 : 0,
+      },
+      {
+        label: "SPSA Search Parameter Tuning (Run Last)",
+        detail: spsaDone ? "Search constants tuned for v4" : "Pending — Run LAST in Tier 3 Forge after v4",
+        done: spsaDone,
+        partial: spsaDone ? 100 : 0,
       }
     );
 
@@ -4484,6 +4603,11 @@
       maxStage,
       pct,
       elo,
+      estElo,
+      calibratedElo,
+      calibGames,
+      eloIsCalibrated,
+      eloLabel,
       targetElo,
       tier,
       isMax,
@@ -4502,10 +4626,13 @@
     if (isFighterLocked(f)) return f.defaultElo;
     const evo = getApexEvolution(f);
     if (evo) {
-      return evo.isMax ? `👑 ~${evo.elo} Elo (MAX)` : `Lv ${evo.stage}/${evo.maxStage} · ~${evo.elo} Elo`;
+      return evo.isMax ? `👑 ${evo.eloLabel} (MAX)` : `Lv ${evo.stage}/${evo.maxStage} · ${evo.eloLabel}`;
     }
     if (p && p.has_elo) {
-      return p.is_relative ? `${p.est_elo >= 0 ? "+" : ""}${p.est_elo} rel` : `~${p.est_elo} Elo`;
+      if (p.is_relative) return `${p.est_elo >= 0 ? "+" : ""}${p.est_elo} rel`;
+      if (p.calibrated && p.calibrated_elo > 0) return `${p.calibrated_elo} Cal (${p.calib_games}g)`;
+      if (f.faction === "stockfish") return f.defaultElo;
+      return `Est. ~${p.est_elo} Elo`;
     }
     return f.defaultElo;
   }
@@ -4525,6 +4652,7 @@
     if (lower.includes("oracle") || lower.includes("lmr")) return FIGHTERS_ROSTER.find((f) => f.level === 15);
     if (lower.includes("omega")) return FIGHTERS_ROSTER.find((f) => f.level === 16);
     if (lower.includes("singularity") || lower.includes("distilled")) return FIGHTERS_ROSTER.find((f) => f.level === 17);
+    if (lower.includes("toy") || lower.includes("lite")) return FIGHTERS_ROSTER.find((f) => f.level === 20);
     if (lower.includes("zero-c v1") || lower.includes("4320") || lower.includes("chronos")) return FIGHTERS_ROSTER.find((f) => f.level === 13);
     if (lower.includes("zero-c") || lower.includes("alphazero") || lower.includes("nova")) return FIGHTERS_ROSTER.find((f) => f.level === 12);
     if (lower.includes("stockfish")) {
@@ -4551,7 +4679,7 @@
       el.innerHTML = f.avatar;
       el.style.borderColor = evo ? evo.accent : f.accent;
       el.title = evo
-        ? `${f.name} [${evo.shortStatus} • ~${evo.elo} Elo] (click to inspect Forge tasks)`
+        ? `${f.name} [${evo.shortStatus} • ${evo.eloLabel}] (click to inspect Forge tasks)`
         : `${f.name} — ${f.epithet} (click to read story)`;
       el.dataset.fighterId = f.id;
     } else {
@@ -4590,6 +4718,9 @@
     grid.innerHTML = list
       .map((f) => {
         const locked = isFighterLocked(f);
+        const preset = getPresetByLevel(f.level);
+        const partial = !locked && Boolean(preset && preset.partial);
+        const untrained = !locked && preset && preset.desc && preset.desc.toLowerCase().includes("untrained");
         const sel = f.id === selectedFighterId ? "selected" : "";
         const evo = getApexEvolution(f);
         const cardAccent = evo ? evo.accent : f.accent;
@@ -4598,9 +4729,13 @@
           <span class="fc-level-pill">L${f.level}</span>
           ${
             locked
-              ? `<span class="fc-lock-badge">&#128274; SEALED</span>`
+              ? `<span class="fc-lock-badge">&#128274; NEEDS COMPUTE</span>`
+              : untrained
+              ? `<span class="fc-untrained-badge">&#9888; UNTRAINED</span>`
               : evo
               ? `<span class="fc-evo-badge ${evo.isMax ? "max" : ""}">${evo.badgeText}</span>`
+              : partial
+              ? `<span class="fc-partial-badge">&#9203; PARTIAL</span>`
               : ""
           }
           <div class="fc-avatar">${f.avatar}</div>
@@ -4619,6 +4754,417 @@
         renderFighterDossier(selectedFighterId);
       });
     });
+  }
+
+  // ==========================================================================
+  // What Each Bot Represents + Per-Stage Canvas Charting & Archive Reports
+  // ==========================================================================
+  const BOT_REPRESENTS_MAP = {
+    "titan-1": "Classic C11 alpha-beta search throttled to ~2 ply + intentional evaluation noise (Novice baseline).",
+    "titan-2": "Shallow classical C11 search with piece-square + light material heuristics (~1200-Elo casual opponent).",
+    "titan-3": "Fixed-depth club-level C11 alpha-beta search without heavy late-move reductions (~1600 Elo).",
+    "titan-4": "Fast 1-thread C11 AVX2 NNUE v3 engine at tournament club speed (~2000 Elo).",
+    "titan-5": "Multi-threaded C11 AVX2 NNUE v3 engine with ProbCut and Quiescence (~2200 Elo).",
+    "titan-6": "Full 4-thread Lazy SMP Titan-C flagship running AVX2 SCReLU NNUE v3 (4x768->256) with hand-tuned search.",
+    "zero-v2": "Pure tabula rasa 10x128 SE-ResNet neural network trained solely via self-play GPU MCTS (unlocks as soon as Gen 0+ exists; labeled Partial until 500k games/graduation).",
+    "zero-v1": "Immutable snapshot of the completed 1st-gen 6x96 SE-ResNet at Generation 4,320 (~554k self-play games).",
+    "zero-toy": "Isolated fast sandbox AlphaZero net in data/az_toy/ (~15 min GPU run) so you can watch training from scratch quickly.",
+    "hybrid-dual": "Tier 3 Mythic Hybrid: pairs Titan-C's fast C11 alpha-beta tactics with finished Zero-C v2's positional WDL evaluation at root & frontier nodes.",
+    "hybrid-lmr": "Tier 3 Mythic Hybrid: C11 alpha-beta search whose Late Move Reductions (LMR) & move ordering are guided by finished Zero-C v2's neural policy prior.",
+    "hybrid-omega": "Tier 3 Mythic Hybrid: GPU MCTS search seeded & verified against classical quiescence tactical safety checks.",
+    "hybrid-nnue": "Zero-C Guild Capstone (Tier 2): Zero-C v2's 3.56M-param ResNet compressed via Knowledge Distillation into a fast 200ns AVX2 CPU NNUE (data/chess_net_zero_v4.nnue), feeding Tier 3 Datagen.",
+    "apex-pure": "Tier 3 Apex Vanguard: modern C11 search (Full CorrHist, Cut/Cap LMR) + 1024-wide NNUE v4 (data/titan_v6_1024.nnue) + SPSA params, zero tablebases. Builds atop completed Tier 2!",
+    "apex-syzygy": "Same engine & 1024 NNUE v4 brain as Apex-C Pure, plus exact 3-4-5 piece Syzygy WDL/DTZ tablebase probing in data/syzygy/.",
+    "sf-7": "Official external Stockfish binary limited via UCI_Elo = 1320 (or binary min floor) as an independent calibration anchor.",
+    "sf-8": "Official external Stockfish binary limited to UCI_Elo = 1600.",
+    "sf-9": "Official external Stockfish binary limited to UCI_Elo = 2000.",
+    "sf-10": "Official external Stockfish binary limited to UCI_Elo = 2400 (strong IM calibration gate).",
+    "sf-11": "Unthrottled official external Stockfish running at full strength (~3500+ Elo)."
+  };
+
+  function getBotRepresentsText(f, locked, preset) {
+    let base = BOT_REPRESENTS_MAP[f.id] || f.weapon;
+    const tier2Done = Boolean(
+      (p3kLastData && p3kLastData.tier2_done) ||
+        (azLastData && azLastData.v2_graduated && azLastData.nnue_distilled)
+    );
+    if (locked) {
+      if (f.level === 20) return `${base} Currently LOCKED — start the 15-Min Toy Net sprint to generate Gen 0+ and unlock.`;
+      if (f.level === 17) return `${base} Currently LOCKED until Zero-C v2 is graduated & distilled to create data/chess_net_zero_v4.nnue.`;
+      if (!tier2Done) return `${base} Currently LOCKED until Tier 2 (Zero-C v2 + Singularity v5 Distillation) is completely done.`;
+      if (f.level === 19) return `${base} Currently LOCKED until 5-piece Syzygy files are downloaded in Tier 3 Step 1.`;
+      return `${base} Currently LOCKED until you begin Tier 3 Apex Forge (download Syzygy or start Datagen).`;
+    }
+    if (preset && preset.desc && preset.desc.toLowerCase().includes("untrained")) {
+      return `${base} CURRENT STATE: Untrained Gen-0 / random weights placeholder — plays poorly until you train it!`;
+    }
+    if (preset && preset.partial) {
+      return `${base} CURRENT STATE: Partially trained & playable right now! Expect strength to climb as you complete more training.`;
+    }
+    return base;
+  }
+
+  function setupHiDpiCanvas(canvas, cssHeight = 140) {
+    if (!canvas) return null;
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const w = Math.max(240, canvas.clientWidth || canvas.parentElement.clientWidth - 20 || 360);
+    const h = cssHeight;
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+    canvas.style.height = `${h}px`;
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { ctx, w, h };
+  }
+
+  function drawCanvasLineChart(canvas, xVals, series, opts = {}) {
+    const box = setupHiDpiCanvas(canvas, opts.height || 140);
+    if (!box) return;
+    const { ctx, w, h } = box;
+    ctx.clearRect(0, 0, w, h);
+    if (!xVals || xVals.length === 0) {
+      ctx.fillStyle = "#8b949e";
+      ctx.font = "12px sans-serif";
+      ctx.fillText(opts.emptyText || "Waiting for data points...", 14, Math.round(h / 2));
+      return;
+    }
+
+    const pad = { l: 42, r: opts.rightAxis ? 42 : 12, t: 12, b: 22 };
+    const pw = Math.max(20, w - pad.l - pad.r);
+    const ph = Math.max(20, h - pad.t - pad.b);
+
+    // Subtle grid
+    ctx.strokeStyle = "rgba(255,255,255,0.07)";
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 3; i++) {
+      const yy = pad.t + (ph * i) / 3;
+      ctx.beginPath();
+      ctx.moveTo(pad.l, yy);
+      ctx.lineTo(w - pad.r, yy);
+      ctx.stroke();
+    }
+
+    if (opts.refLine != null && opts.refMin != null && opts.refMax != null) {
+      const ry = pad.t + ph * (1 - (opts.refLine - opts.refMin) / Math.max(1e-6, opts.refMax - opts.refMin));
+      ctx.save();
+      ctx.setLineDash([4, 4]);
+      ctx.strokeStyle = "rgba(255,255,255,0.28)";
+      ctx.beginPath();
+      ctx.moveTo(pad.l, ry);
+      ctx.lineTo(w - pad.r, ry);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Left axis bounds
+    const leftSeries = series.filter((s) => s.axis !== "right");
+    const allLeft = leftSeries.flatMap((s) => s.vals.filter((v) => v != null && Number.isFinite(v)));
+    let lMin = opts.yMin != null ? opts.yMin : Math.min(...allLeft);
+    let lMax = opts.yMax != null ? opts.yMax : Math.max(...allLeft);
+    if (!Number.isFinite(lMin) || !Number.isFinite(lMax)) {
+      lMin = 0;
+      lMax = 1;
+    }
+    if (lMax - lMin < 1e-6) {
+      lMin -= 0.5;
+      lMax += 0.5;
+    }
+    const lPad = (lMax - lMin) * 0.08;
+    if (opts.yMin == null) lMin -= lPad;
+    if (opts.yMax == null) lMax += lPad;
+
+    const rightSeries = series.filter((s) => s.axis === "right");
+    let rMin = 0;
+    let rMax = 1;
+    if (rightSeries.length > 0) {
+      const allR = rightSeries.flatMap((s) => s.vals.filter((v) => v != null && Number.isFinite(v)));
+      rMin = opts.rMin != null ? opts.rMin : Math.min(...allR);
+      rMax = opts.rMax != null ? opts.rMax : Math.max(...allR);
+      if (rMax - rMin < 1e-6) {
+        rMin -= 0.5;
+        rMax += 0.5;
+      }
+    }
+
+    const fmtTick = (v) => (Math.abs(v) >= 1000 ? `${(v / 1000).toFixed(1)}k` : Math.abs(v) < 1 ? v.toFixed(4) : v.toFixed(1));
+    ctx.fillStyle = "#8b949e";
+    ctx.font = "10px monospace";
+    ctx.fillText(fmtTick(lMax), 4, pad.t + 8);
+    ctx.fillText(fmtTick(lMin), 4, pad.t + ph);
+    if (opts.rightAxis && rightSeries.length > 0) {
+      ctx.fillStyle = rightSeries[0].color || "#d2a8ff";
+      ctx.fillText(fmtTick(rMax), w - pad.r + 4, pad.t + 8);
+      ctx.fillText(fmtTick(rMin), w - pad.r + 4, pad.t + ph);
+    }
+
+    // X-axis first & last labels
+    ctx.fillStyle = "#8b949e";
+    ctx.fillText(String(xVals[0]), pad.l, h - 5);
+    const lastLbl = String(xVals[xVals.length - 1]);
+    ctx.fillText(lastLbl, Math.max(pad.l + 40, w - pad.r - lastLbl.length * 6), h - 5);
+
+    const n = xVals.length;
+    series.forEach((s) => {
+      const isR = s.axis === "right";
+      const lo = isR ? rMin : lMin;
+      const hi = isR ? rMax : lMax;
+      ctx.strokeStyle = s.color || "#58a6ff";
+      ctx.lineWidth = s.width || 2;
+      ctx.beginPath();
+      let started = false;
+      s.vals.forEach((v, i) => {
+        if (v == null || !Number.isFinite(v)) return;
+        const xx = pad.l + (n === 1 ? pw / 2 : (pw * i) / (n - 1));
+        const yy = pad.t + ph * (1 - (v - lo) / Math.max(1e-9, hi - lo));
+        if (!started) {
+          ctx.moveTo(xx, yy);
+          started = true;
+        } else {
+          ctx.lineTo(xx, yy);
+        }
+      });
+      ctx.stroke();
+
+      if (s.highlightIdx != null && s.vals[s.highlightIdx] != null) {
+        const i = s.highlightIdx;
+        const xx = pad.l + (n === 1 ? pw / 2 : (pw * i) / (n - 1));
+        const yy = pad.t + ph * (1 - (s.vals[i] - lo) / Math.max(1e-9, hi - lo));
+        ctx.fillStyle = "#ffd97d";
+        ctx.beginPath();
+        ctx.arc(xx, yy, 4.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    });
+
+    // Inline legend top-right
+    let lx = pad.l + 6;
+    ctx.font = "10.5px sans-serif";
+    series.forEach((s) => {
+      if (!s.label) return;
+      ctx.fillStyle = s.color || "#58a6ff";
+      ctx.fillRect(lx, 3, 8, 3);
+      ctx.fillStyle = "#c9d1d9";
+      ctx.fillText(s.label, lx + 11, 8);
+      lx += ctx.measureText(s.label).width + 20;
+    });
+  }
+
+  function drawCanvasBarChart(canvas, labels, counts, opts = {}) {
+    const box = setupHiDpiCanvas(canvas, opts.height || 135);
+    if (!box) return;
+    const { ctx, w, h } = box;
+    ctx.clearRect(0, 0, w, h);
+    if (!labels || labels.length === 0) {
+      ctx.fillStyle = "#8b949e";
+      ctx.font = "12px sans-serif";
+      ctx.fillText(opts.emptyText || "Waiting for histogram...", 14, Math.round(h / 2));
+      return;
+    }
+    const maxV = Math.max(1, ...counts);
+    const pad = { l: 10, r: 10, t: 14, b: 22 };
+    const pw = w - pad.l - pad.r;
+    const ph = h - pad.t - pad.b;
+    const slotW = pw / labels.length;
+    const barW = Math.max(4, slotW * 0.72);
+    labels.forEach((lbl, i) => {
+      const val = counts[i] || 0;
+      const bh = (val / maxV) * ph;
+      const xx = pad.l + i * slotW + (slotW - barW) / 2;
+      const yy = pad.t + ph - bh;
+      ctx.fillStyle = (opts.colors && opts.colors[i]) || opts.color || "#f0883e";
+      ctx.fillRect(xx, yy, barW, bh);
+      ctx.fillStyle = "#8b949e";
+      ctx.font = "9px monospace";
+      if (labels.length <= 8 || i % 2 === 0) {
+        ctx.fillText(String(lbl), xx, h - 6);
+      }
+    });
+  }
+
+  let dgStatsCache = null;
+  let dgStatsLastFetch = 0;
+
+  function renderSyzygyChart(syz) {
+    const cvs = $("chart-syz-split");
+    if (!cvs) return;
+    const wdl = syz.wdl_files || 0;
+    const dtz = syz.dtz_files || 0;
+    const rem = Math.max(0, (syz.target_files || 290) - (syz.files || 0));
+    drawCanvasBarChart(cvs, ["WDL (.rtbw)", "DTZ (.rtbz)", "Missing"], [wdl, dtz, rem], {
+      height: 115,
+      colors: ["#39c5cf", "#58a6ff", "#484f58"],
+    });
+  }
+
+  function renderDatagenCharts(dg, stats) {
+    const spdCvs = $("chart-dg-speed");
+    const evalCvs = $("chart-dg-eval");
+    const pts = (dg.history && dg.history.points) || [];
+    if (spdCvs) {
+      drawCanvasLineChart(
+        spdCvs,
+        pts.map((p) => `${Math.round(p.elapsed_sec || 0)}s`),
+        [{ label: "pos/sec", vals: pts.map((p) => p.pos_per_sec), color: "#f0883e" }],
+        { height: 135, emptyText: "Throughput history records during Datagen runs" }
+      );
+    }
+    if (evalCvs) {
+      if (stats && stats.eval_hist) {
+        drawCanvasBarChart(evalCvs, stats.eval_hist.labels, stats.eval_hist.counts, {
+          height: 135,
+          color: "#58a6ff",
+        });
+      } else {
+        drawCanvasBarChart(evalCvs, [], [], { height: 135, emptyText: "Run Datagen to view Eval cp histogram" });
+      }
+    }
+    if ($("p3k-dg-corr")) {
+      $("p3k-dg-corr").textContent = stats && stats.score_result_corr != null ? `+${stats.score_result_corr}` : "—";
+    }
+    if ($("p3k-dg-wdl")) {
+      $("p3k-dg-wdl").textContent = stats ? `${stats.win_pct}% / ${stats.draw_pct}% / ${stats.loss_pct}%` : "—";
+    }
+  }
+
+  function renderSpsaCharts(spd) {
+    const winCvs = $("chart-spsa-win");
+    const drCvs = $("chart-spsa-drift");
+    const hist = (spd && spd.history) || [];
+    if (winCvs) {
+      drawCanvasLineChart(
+        winCvs,
+        hist.map((h) => `#${h.iter}`),
+        [{ label: "+delta Win %", vals: hist.map((h) => h.win_pct), color: "#a371f7" }],
+        { height: 135, yMin: 15, yMax: 85, refLine: 50, refMin: 15, refMax: 85, emptyText: "SPSA win-rate curve appears during tuning" }
+      );
+    }
+    if (drCvs) {
+      const norm = (key, lo, hi) => hist.map((h) => (h[key] != null ? ((h[key] - lo) / (hi - lo)) * 100 : null));
+      drawCanvasLineChart(
+        drCvs,
+        hist.map((h) => `#${h.iter}`),
+        [
+          { label: "RFP%", vals: norm("RFPBase", 40, 140), color: "#ff9e64" },
+          { label: "Fut%", vals: norm("FutMult", 45, 160), color: "#39c5cf" },
+          { label: "LMR%", vals: norm("HistLMRDiv", 2400, 9500), color: "#3fb950" },
+          { label: "Corr%", vals: norm("CorrDiv", 90, 620), color: "#f778ba" },
+        ],
+        { height: 135, yMin: 0, yMax: 100, emptyText: "Parameter drift appears during SPSA tuning" }
+      );
+    }
+  }
+
+  function renderNnueCharts(nnd) {
+    const cvs = $("chart-nnue-mse");
+    if (!cvs) return;
+    const hist = (nnd && nnd.history) || [];
+    let bestIdx = null;
+    let bestV = 1e9;
+    hist.forEach((h, i) => {
+      if (h.val_mse != null && h.val_mse < bestV) {
+        bestV = h.val_mse;
+        bestIdx = i;
+      }
+    });
+    drawCanvasLineChart(
+      cvs,
+      hist.map((h) => `Ep ${h.epoch}`),
+      [
+        { label: "Train MSE", vals: hist.map((h) => h.train_mse), color: "#58a6ff" },
+        { label: "Val MSE (★ best)", vals: hist.map((h) => h.val_mse), color: "#ffd97d", highlightIdx: bestIdx },
+        { label: "LR", vals: hist.map((h) => h.lr), color: "#d2a8ff", axis: "right" },
+      ],
+      { height: 150, rightAxis: true, emptyText: "Train/Validation MSE curves appear after Epoch 1" }
+    );
+  }
+
+  function renderDistillChart(dist) {
+    const wrap = $("distill-chart-wrap");
+    const cvs = $("chart-distill-mse");
+    if (!wrap || !cvs) return;
+    const hist = (dist && dist.history) || [];
+    wrap.classList.toggle("hidden", hist.length === 0);
+    if (hist.length === 0) return;
+    drawCanvasLineChart(
+      cvs,
+      hist.map((h) => `Ep ${h.epoch}`),
+      [
+        { label: "Train MSE", vals: hist.map((h) => h.train_mse), color: "#39c5cf" },
+        { label: "Val MSE", vals: hist.map((h) => h.val_mse), color: "#ffd97d" },
+      ],
+      { height: 145 }
+    );
+  }
+
+  function renderToyCharts(t) {
+    const cvs = $("chart-toy-curves");
+    if (!cvs) return;
+    const hist = (t && t.detail && t.detail.history) || [];
+    drawCanvasLineChart(
+      cvs,
+      hist.map((h) => `G${h.gen}`),
+      [
+        { label: "Total Loss", vals: hist.map((h) => h.loss), color: "#f778ba" },
+        { label: "Policy Acc %", vals: hist.map((h) => h.pol_acc), color: "#39c5cf", axis: "right" },
+      ],
+      { height: 175, rightAxis: true, emptyText: "Start Toy Net sprint to plot live Loss & Policy Top-1 Accuracy" }
+    );
+  }
+
+  function updateGlobalLivePill() {
+    const pill = $("live-job-pill");
+    const sbDot = $("sb-live-dot");
+    const sbTitle = $("sb-live-title");
+    const sbSub = $("sb-live-sub");
+    if (!pill) return;
+
+    const azRun = Boolean(azLastData && azLastData.running);
+    const dgRun = Boolean(p3kLastData && p3kLastData.datagen && p3kLastData.datagen.running);
+    const nnRun = Boolean(p3kLastData && p3kLastData.nnue_v4 && p3kLastData.nnue_v4.running);
+    const spRun = Boolean(p3kLastData && p3kLastData.spsa && p3kLastData.spsa.running);
+    const syRun = Boolean(p3kLastData && p3kLastData.syzygy && p3kLastData.syzygy.downloading);
+    const toyRun = Boolean(toyLastData && toyLastData.running);
+    const anyRun = azRun || dgRun || nnRun || spRun || syRun || toyRun;
+
+    let txt = "Idle • Studio Ready";
+    let route = "/road-to-3k";
+    let sub = "Ready to train or benchmark";
+    if (azRun) {
+      const g = azLastData.gen || 0;
+      txt = `🧠 Zero-C v2 • Gen ${g}`;
+      sub = `${(azLastData.total_games || 0).toLocaleString()} self-play games`;
+      route = "/zero-c";
+    } else if (nnRun) {
+      const ep = (p3kLastData.nnue_v4.detail && p3kLastData.nnue_v4.detail.epoch) || 0;
+      txt = `🔥 1024 NNUE v4 • Ep ${ep}`;
+      sub = "GPU Training in progress";
+      route = "/project-3000";
+    } else if (dgRun) {
+      txt = `⚡ Datagen Running`;
+      sub = "Collecting positions";
+      route = "/project-3000";
+    } else if (spRun) {
+      txt = `⚙️ SPSA Tuner Active`;
+      sub = "Calibrating search params";
+      route = "/project-3000";
+    } else if (syRun) {
+      txt = `📚 Syzygy Downloading`;
+      sub = `${(p3kLastData.syzygy && p3kLastData.syzygy.files) || 0}/290 files`;
+      route = "/project-3000";
+    } else if (toyRun) {
+      txt = `⚡ Toy Net Sprint Active`;
+      sub = `Gen ${(toyLastData.detail && toyLastData.detail.gen) || 0}`;
+      route = "/toy-net";
+    } else if (azLastData && azLastData.gen > 0) {
+      txt = `Zero-C v2 Gen ${azLastData.gen} • NNUE ${p3kLastData && p3kLastData.nnue_v4 && p3kLastData.nnue_v4.ready ? "v4 Ready" : "Pending"}`;
+      sub = "Click to inspect Training Pipeline";
+    }
+    pill.textContent = txt;
+    pill.classList.toggle("active", anyRun);
+    pill.dataset.targetRoute = route;
+    if (sbDot) sbDot.classList.toggle("running", anyRun);
+    if (sbTitle) sbTitle.textContent = anyRun ? "Training Active" : "Pipeline Idle";
+    if (sbSub) sbSub.textContent = sub;
   }
 
   function renderFighterDossier(fighterId) {
@@ -4654,25 +5200,38 @@
 
     const isSingularity = f.level === 17;
     const isApexSyzygy = f.level === 19;
-    const runtimeUnlocked = Boolean(
-      state && state.presets && state.presets.some((p) => p.level === 14 && !p.locked)
+    const isToy = f.level === 20;
+    const v2Graduated = Boolean((azLastData && azLastData.v2_graduated) || (p3kLastData && p3kLastData.phases && p3kLastData.phases.zeroc_done));
+    const tier2Done = Boolean(
+      (p3kLastData && p3kLastData.tier2_done) ||
+        (azLastData && azLastData.v2_graduated && azLastData.nnue_distilled)
     );
     const playLabel = evo ? `${f.name} (Lv ${evo.stage}/${evo.maxStage} ${evo.tier})` : f.name;
     const actionHtml = locked
-      ? isApexSyzygy
+      ? isToy
         ? `<div class="locked-seal-banner">
-            <strong>&#128274; Requires 5-Piece Syzygy Tablebases</strong>
-            <p>Download the official 3-4-5 piece Syzygy WDL/DTZ files into <code>data/syzygy/</code> (~939 MB) directly from the <strong>&#128640; Road to 3K &rarr; &#128293; 3000 Forge</strong> tab. Once installed, Apex-C + Syzygy unlocks automatically!</p>
+            <strong>&#128274; Needs 15-Min Toy Net Sprint</strong>
+            <p>Launch the isolated Toy Net sandbox in <strong>15-Min Toy Net</strong> to generate Gen 0+ (completes at Gen 60) and unlock Zero-C Lite!</p>
           </div>`
         : isSingularity
         ? `<div class="locked-seal-banner">
-            <strong>&#128274; Two-Stage Unlock &mdash; Requires Knowledge Distillation Training</strong>
-            <p><strong>1. Complete Zero-C v2:</strong> ${runtimeUnlocked ? "&#9989; Done" : "&#9203; In Progress"}<br>
-            <strong>2. Distill Compressed AVX2 NNUE:</strong> &#9203; Run <code>src/az/distill_nnue.py</code> from Road to 3K &rarr; Zero-C v2 Lab to train <code>data/chess_net_zero_v4.nnue</code> (~2&ndash;4 min on RTX GPU).</p>
+            <strong>&#128274; Tier 2 Capstone &mdash; Zero-C Neural Guild Distillation</strong>
+            <p><strong>1. Complete Zero-C v2:</strong> ${v2Graduated ? "&#9989; Done" : "&#9203; In Progress"}<br>
+            <strong>2. Distill Compressed AVX2 NNUE:</strong> &#9203; Run <strong>Distill Singularity v5</strong> from <strong>Tier 2: Zero-C &amp; Singularity</strong> to train <code>data/chess_net_zero_v4.nnue</code> (~2&ndash;4 min on RTX GPU).</p>
+          </div>`
+        : !tier2Done
+        ? `<div class="locked-seal-banner">
+            <strong>&#128274; Tier 3 Locked &mdash; Finish Tier 2 (Zero-C Neural Guild) First</strong>
+            <p>Complete &amp; mark <strong>Zero-C v2</strong> Done and distill &amp; mark <strong>Singularity v5</strong> Done in <strong>Tier 2</strong> so Tier 3 Apex trains on top of your best completed neural model.</p>
+          </div>`
+        : isApexSyzygy
+        ? `<div class="locked-seal-banner">
+            <strong>&#128274; Requires 5-Piece Syzygy Tablebases</strong>
+            <p>Tier 2 is complete! Download the official 3-4-5 piece Syzygy WDL/DTZ files into <code>data/syzygy/</code> (~939 MB) in <strong>Tier 3: Apex &amp; Hybrid Forge</strong> to unlock Apex-C + Syzygy.</p>
           </div>`
         : `<div class="locked-seal-banner">
-            <strong>&#128274; Runtime Mythic Hybrid &mdash; Awaiting Zero-C v2 Completion</strong>
-            <p>Pre-wired in <code>src/az/hybrid_engine.py</code> and unlocks automatically the instant Zero-C v2 finishes training and stamps <code>data/az/v2_complete.flag</code>.</p>
+            <strong>&#128274; Ready in Tier 3 &mdash; Start Apex Forge to Awaken</strong>
+            <p>Tier 2 is complete! Start any step in <strong>Tier 3: Apex &amp; Hybrid Forge</strong> (Download Syzygy or begin Self-Play Datagen with Singularity v5) to awaken the Mythic Hybrids &amp; Apex-C.</p>
           </div>`
       : unavailable
       ? `<div class="locked-seal-banner">
@@ -4689,14 +5248,14 @@
           <div class="apex-evo-head">
             <div>
               <div class="apex-evo-kicker">DYNAMIC FORGE EVOLUTION &bull; ${evo.stage} OF ${evo.maxStage} TASKS COMPLETE</div>
-              <div class="apex-evo-title">${evo.badgeText} &mdash; ${evo.tier} <span>(~${evo.elo} Elo${
-                evo.isMax ? " • MAX POWER!" : ` &rarr; Target ${evo.targetElo}+ Elo`
+              <div class="apex-evo-title">${evo.badgeText} &mdash; ${evo.tier} <span>(${evo.eloLabel}${
+                evo.isMax ? " • MAX STAGE" : evo.eloIsCalibrated ? "" : ` &rarr; Potential ~${evo.targetElo}+`
               })</span></div>
             </div>
             ${
               evo.isMax
                 ? `<span class="p3k-status-pill" style="color:#ffd97d;border-color:#ffd97d;">&#128081; FULLY FORGED</span>`
-                : `<button type="button" class="btn btn-sm btn-orange" id="btn-dossier-open-forge">&#128293; Level Up in 3000 Forge</button>`
+                : `<button type="button" class="btn btn-sm btn-orange" id="btn-dossier-open-forge">&#128293; Level Up in Tier 3 Forge</button>`
             }
           </div>
           <div class="apex-evo-meter-row">
@@ -4731,15 +5290,20 @@
             evo ? ` <span class="dossier-evo-pill">${evo.tier}</span>` : ""
           }</div>
           <div class="dossier-title">${f.epithet} &mdash; ${
-            evo ? (evo.isMax ? f.botName : `Currently running on ${evo.tasks.find((x) => x.label.includes("NNUE")).done ? "1024 NNUE v4" : "v3 NNUE Prototype"}`) : f.botName
+            evo ? (evo.isMax ? f.botName : `Currently running on ${evo.tasks.find((x) => x.label.includes("NNUE")).done ? "1024 NNUE v4" : "v3 / Singularity Prototype"}`) : f.botName
           }</div>
           <div class="dossier-elo-line">${fighterDisplayElo(f)}${
-            evo && !evo.isMax ? ` <span style="color:var(--muted);font-weight:500;">(Target: ${evo.targetElo}+ Elo)</span>` : ""
+            evo && !evo.isMax && !evo.eloIsCalibrated ? ` <span style="color:var(--muted);font-weight:500;">(Stage Potential: ~${evo.targetElo}+ Elo)</span>` : ""
           }</div>
         </div>
       </div>
 
       ${evoPanelHtml}
+
+      <div class="bot-represents-box">
+        <strong>&#129516; What This Bot Actually Represents</strong>
+        <p>${getBotRepresentsText(f, locked, preset)}</p>
+      </div>
 
       <div class="dossier-quote">${f.quote}</div>
 
@@ -4799,9 +5363,9 @@
           .forEach((c) => c.classList.toggle("active", c.dataset.faction === "all"));
       }
     }
+    activateStudioView("fighters-modal", "/fighters", "Fighters & Engine Mechanics");
     renderFightersGrid();
     renderFighterDossier(selectedFighterId);
-    $("fighters-modal").classList.remove("hidden");
     syncUrl("/fighters");
     api("/api/p3k/status", "GET").then((p3k) => {
       if (p3k && p3k.ok) {
@@ -4815,10 +5379,8 @@
   }
 
   function closeFightersModal(silent = false) {
-    const m = $("fighters-modal");
-    if (!m || m.classList.contains("hidden")) return;
-    m.classList.add("hidden");
-    if (!silent) syncUrl(underlyingBaseRoute());
+    if ($("fighters-modal")) $("fighters-modal").classList.add("hidden");
+    if (!silent) showHomeMenu();
   }
 
   if ($("btn-fighters")) {
@@ -4843,7 +5405,7 @@
   if ($("btn-az-unlock-now")) {
     $("btn-az-unlock-now").addEventListener("click", async () => {
       const ok = window.confirm(
-        "Graduate Zero-C v2 now?\n\n• Immediately unlocks the 3 Runtime Hybrids (Gemini Arbiter, Oracle of LMR, Zero-C Omega).\n• Unlocks the Stage-2 Knowledge Distillation Forge so you can train Singularity v5's compressed AVX2 NNUE.\n\nYou can still continue training Zero-C v2 anytime afterward."
+        "Graduate Zero-C v2 now?\n\n• Marks Zero-C v2 complete and unlocks Singularity v5 Knowledge Distillation (Tier 2 Capstone).\n• Complete & mark Singularity v5 Done next to finish Tier 2 and unlock Tier 3 (Mythic Hybrids & Apex Forge).\n\nYou can still continue training Zero-C v2 anytime afterward."
       );
       if (!ok) return;
       const az = await api("/api/az/complete", "POST", { unlock: true });
@@ -4854,7 +5416,7 @@
       }
       renderAzStatus(az);
       launchConfetti();
-      logTerm("Zero-C v2 graduated! 3 Runtime Hybrids unlocked & Singularity v5 Distillation Forge ready!", "term-ok");
+      logTerm("Zero-C v2 graduated! Now distill Singularity v5 (#17) to complete Tier 2 & unlock Tier 3.", "term-ok");
     });
   }
   if ($("btn-az-distill-start")) {
@@ -4880,16 +5442,17 @@
   if ($("btn-az-open-hybrids")) {
     $("btn-az-open-hybrids").addEventListener("click", () => {
       closeAzModal(true);
-      fightersFactionFilter = "hybrid";
-      selectedFighterId = "hybrid-dual";
+      const tier3Ready = Boolean(state && state.presets && state.presets.some((p) => p.level === 14 && !p.locked));
+      fightersFactionFilter = tier3Ready ? "hybrid" : "zero";
+      selectedFighterId = tier3Ready ? "hybrid-dual" : "hybrid-nnue";
       openFightersModal();
       if ($("fighters-filters")) {
         $("fighters-filters")
           .querySelectorAll(".chip")
-          .forEach((c) => c.classList.toggle("active", c.dataset.faction === "hybrid"));
+          .forEach((c) => c.classList.toggle("active", c.dataset.faction === fightersFactionFilter));
       }
       renderFightersGrid();
-      renderFighterDossier("hybrid-dual");
+      renderFighterDossier(selectedFighterId);
     });
   }
   if ($("fighters-filters")) {
@@ -4925,18 +5488,45 @@
   // ==========================================================================
   let p3kSyzWasReady = false;
   let p3kNnueWasReady = false;
+  let p3kForgeWasUnlocked = false;
+  let toyDoneRefreshed = false;
 
   function renderP3kStatus(d) {
     if (!d || !d.ok) return;
     p3kLastData = d;
 
+    const tier2Done = Boolean(d.tier2_done);
+    const forgeUnlocked = Boolean(d.forge_unlocked);
+    const ph = d.phases || {};
+
+    if ($("p3k-tier3-lock-banner")) {
+      $("p3k-tier3-lock-banner").classList.toggle("hidden", forgeUnlocked);
+    }
+
+    if (forgeUnlocked && !p3kForgeWasUnlocked) {
+      p3kForgeWasUnlocked = true;
+      api("/api/state", "GET").then((fresh) => {
+        if (fresh && fresh.ok) {
+          state = fresh;
+          populatePresets(state.presets);
+        }
+      });
+    } else if (!forgeUnlocked) {
+      p3kForgeWasUnlocked = false;
+    }
+
     // Coexistence guidance banner
     const ban = $("p3k-coexist-banner");
     if (ban) {
-      ban.classList.toggle("gpu-free", !d.az_running);
-      ban.innerHTML = d.az_running
-        ? "<strong>&#129504; Zero-C v2 is actively training on GPU:</strong> Safe to run <strong>Stage 1 (Syzygy Download)</strong> + <strong>Stage 2 (Datagen at 2T)</strong> or <strong>Stage 3 (SPSA at 2T)</strong> alongside it (runs at <code>nice 15</code>, 0% GPU). Pause Zero-C for ~20 min only when ready for <strong>Stage 4 (Big NNUE v4 GPU Train)</strong>."
-        : "<strong>&#128640; RTX GPU &amp; CPU are free!</strong> You can run <strong>Datagen at 8&ndash;10T (~12M pos/hr)</strong>, <strong>SPSA at 8T</strong>, or launch <strong>Stage 4 (Big 1024 NNUE v4 GPU Training)</strong> right now!";
+      ban.classList.toggle("gpu-free", forgeUnlocked && !d.az_running);
+      if (!forgeUnlocked) {
+        ban.innerHTML =
+          "<strong>&#128274; Tier 2 Must Finish First:</strong> Complete &amp; mark <strong>Zero-C v2</strong> Done AND distill &amp; mark <strong>Singularity v5</strong> Done in <strong>Tier 2</strong> so Tier 3 Apex trains atop your best completed neural model. Any existing disk checkpoints/datasets remain safely preserved.";
+      } else {
+        ban.innerHTML = d.az_running
+          ? "<strong>&#9989; Tier 2 Complete! &bull; &#129504; Zero-C v2 active on GPU:</strong> Safe to run <strong>Step 1 (Syzygy Download)</strong> + <strong>Step 2 (Datagen at 2T w/ Singularity v5)</strong> or <strong>Step 4 (SPSA at 2T)</strong> alongside GPU training (runs at <code>nice 15</code>). Pause GPU before <strong>Step 3 (1024 NNUE v4 GPU)</strong>."
+          : "<strong>&#9989; Tier 2 Complete &amp; GPU/CPU Free!</strong> Ready for <strong>Tier 3 Apex Forge</strong>: Download Syzygy &rarr; Datagen (default Teacher: <strong>Singularity v5</strong> on Pass 1, then <strong>1024 v4</strong> on Pass 2) &rarr; Train NNUE v4 &rarr; Tune SPSA!";
+      }
     }
 
     // 1. Syzygy 5-Piece Tablebase Live Downloader & Tracker
@@ -4948,15 +5538,27 @@
     const syzCard = $("p3k-card-syzygy");
     if (syzCard) {
       const syzComplete = syzFiles >= 285 || (syz.ready && syzFiles >= 145 && syz.dtz_files >= 140);
-      syzCard.classList.toggle("done", syzComplete);
-      syzCard.classList.toggle("running", syzDown || (syzFiles > 0 && !syzComplete));
+      syzCard.classList.toggle("locked-phase", !forgeUnlocked);
+      syzCard.classList.toggle("done", Boolean(ph.syzygy_done || (forgeUnlocked && syzComplete)));
+      syzCard.classList.toggle("running", syzDown || (forgeUnlocked && syzFiles > 0 && !syzComplete));
       if ($("btn-p3k-syz-start")) {
         $("btn-p3k-syz-start").classList.toggle("hidden", syzDown || syzComplete);
+        $("btn-p3k-syz-start").disabled = !forgeUnlocked;
         $("btn-p3k-syz-start").innerHTML = syzFiles > 0 ? "&#11015; Resume Syzygy Download" : "&#11015; Download 5-Man Syzygy";
       }
       if ($("btn-p3k-syz-stop")) $("btn-p3k-syz-stop").classList.toggle("hidden", !syzDown);
-      $("p3k-syz-pill").textContent = syzComplete
-        ? "✓ 5-Man Ready!"
+      if ($("btn-p3k-done-syzygy")) {
+        $("btn-p3k-done-syzygy").textContent = ph.syzygy_done ? "✓ Step 1 Complete" : "✓ Mark Step 1 Complete";
+        $("btn-p3k-done-syzygy").disabled = !forgeUnlocked || Boolean(ph.syzygy_done) || !syz.ready;
+      }
+      $("p3k-syz-pill").textContent = !forgeUnlocked
+        ? syzFiles > 0
+          ? `🔒 Tier 2 First (${syzFiles}/${syzTarget})`
+          : "🔒 Tier 2 First"
+        : ph.syzygy_done
+        ? "✓ Step 1 Done"
+        : syzComplete
+        ? "Ready to Mark Done!"
         : syzFiles > 0
         ? `Downloading (${syzFiles}/${syzTarget})`
         : "Not Downloaded";
@@ -4965,7 +5567,7 @@
       $("p3k-syz-files").textContent = `${syzFiles} / ${syzTarget}`;
       $("p3k-syz-split").textContent = `${syz.wdl_files || 0} / ${syz.dtz_files || 0}`;
       $("p3k-syz-mb").textContent = `${(syz.mb || 0).toFixed(1)} MB`;
-      if (syz.ready && !p3kSyzWasReady) {
+      if (syz.ready && forgeUnlocked && !p3kSyzWasReady) {
         p3kSyzWasReady = true;
         api("/api/state", "GET").then((fresh) => {
           if (fresh && fresh.ok) {
@@ -4976,20 +5578,44 @@
       }
     }
 
-    // 2. Self-Play Datagen
+    // 2. Self-Play Datagen (Locked until Tier 2 Done AND Step 1 Marked Complete)
     const dg = d.datagen || {};
     const dgd = dg.detail || null;
     const dgRun = Boolean(dg.running);
+    const dgUnlocked = forgeUnlocked && Boolean(ph.syzygy_done);
     const dgCard = $("p3k-card-datagen");
     if (dgCard) {
+      dgCard.classList.toggle("locked-phase", !dgUnlocked);
       dgCard.classList.toggle("running", dgRun);
-      dgCard.classList.toggle("done", !dgRun && (dg.file_positions || 0) >= 25000000);
+      dgCard.classList.toggle("done", !dgRun && Boolean(ph.datagen_done));
+      if ($("p3k-lock-datagen")) {
+        $("p3k-lock-datagen").classList.toggle("hidden", dgUnlocked);
+        $("p3k-lock-datagen").innerHTML = !forgeUnlocked
+          ? "&#128274; Locked: Complete <strong>Tier 2 (Zero-C v2 + Singularity v5)</strong> first."
+          : "&#128274; Locked: Complete &amp; mark <strong>Step 1 (Syzygy)</strong> Done before launching Self-Play Datagen.";
+      }
       $("btn-p3k-dg-start").classList.toggle("hidden", dgRun);
+      $("btn-p3k-dg-start").disabled = !dgUnlocked;
       $("btn-p3k-dg-stop").classList.toggle("hidden", !dgRun);
-      $("p3k-dg-threads").disabled = dgRun;
-      $("p3k-dg-millions").disabled = dgRun;
+      if ($("btn-p3k-done-datagen")) {
+        $("btn-p3k-done-datagen").textContent = ph.datagen_done ? "✓ Step 2 Complete" : "✓ Mark Step 2 Complete";
+        $("btn-p3k-done-datagen").disabled = !dgUnlocked || Boolean(ph.datagen_done) || (dg.file_positions || 0) < 1024;
+      }
+      $("p3k-dg-threads").disabled = dgRun || !dgUnlocked;
+      $("p3k-dg-millions").disabled = dgRun || !dgUnlocked;
+      if ($("p3k-dg-teacher")) $("p3k-dg-teacher").disabled = dgRun || !dgUnlocked;
       const dgPct = dgRun && dgd ? dgd.progress_pct || 0 : Math.min(100, ((dg.file_positions || 0) / 25000000) * 100);
-      $("p3k-dg-pill").textContent = dgRun ? `Running (${dgd ? dgd.threads : 2}T)` : (dg.file_positions || 0) > 0 ? "Saved" : "Idle";
+      $("p3k-dg-pill").textContent = !forgeUnlocked
+        ? "🔒 Tier 2 First"
+        : !ph.syzygy_done
+        ? "🔒 Step 1 First"
+        : dgRun
+        ? `Running (${dgd ? dgd.threads : 2}T)`
+        : ph.datagen_done
+        ? "✓ Step 2 Done"
+        : (dg.file_positions || 0) > 0
+        ? "Partial (Ready)"
+        : "Idle";
       $("p3k-dg-fill").style.width = `${Math.max(0, Math.min(100, dgPct)).toFixed(1)}%`;
       $("p3k-dg-pct").textContent = `${Math.round(dgPct)}%`;
       $("p3k-dg-total").textContent = `${(dg.file_positions || 0).toLocaleString()} (${(dg.file_mb || 0).toFixed(0)} MB)`;
@@ -5005,20 +5631,43 @@
       }
     }
 
-    // 3. SPSA Search Tuner
+    // 4. SPSA Search Tuner (Locked until Tier 2 Done AND Step 3 Marked Complete)
     const sp = d.spsa || {};
     const spd = sp.detail || null;
     const spRun = Boolean(sp.running);
+    const spUnlocked = forgeUnlocked && Boolean(ph.nnue_v4_done);
     const spCard = $("p3k-card-spsa");
     if (spCard) {
+      spCard.classList.toggle("locked-phase", !spUnlocked);
       spCard.classList.toggle("running", spRun);
-      spCard.classList.toggle("done", !spRun && spd && spd.iter >= spd.max_iters && spd.max_iters > 0);
+      spCard.classList.toggle("done", !spRun && Boolean(ph.spsa_done));
+      if ($("p3k-lock-spsa")) {
+        $("p3k-lock-spsa").classList.toggle("hidden", spUnlocked);
+        $("p3k-lock-spsa").innerHTML = !forgeUnlocked
+          ? "&#128274; Locked: Finish <strong>Tier 2</strong> &amp; prior Tier 3 steps first."
+          : "&#128274; Locked: Complete &amp; mark <strong>Step 3 (1024 NNUE v4)</strong> Done before tuning SPSA &mdash; search tuning goes last!";
+      }
       $("btn-p3k-spsa-start").classList.toggle("hidden", spRun);
+      $("btn-p3k-spsa-start").disabled = !spUnlocked;
       $("btn-p3k-spsa-stop").classList.toggle("hidden", !spRun);
-      $("p3k-spsa-threads").disabled = spRun;
-      $("p3k-spsa-iters").disabled = spRun;
+      if ($("btn-p3k-done-spsa")) {
+        $("btn-p3k-done-spsa").textContent = ph.spsa_done ? "✓ Step 4 Complete" : "✓ Mark Step 4 Complete";
+        $("btn-p3k-done-spsa").disabled = !spUnlocked || Boolean(ph.spsa_done) || !(spd && spd.iter > 0);
+      }
+      $("p3k-spsa-threads").disabled = spRun || !spUnlocked;
+      $("p3k-spsa-iters").disabled = spRun || !spUnlocked;
       const spPct = spd ? spd.progress_pct || 0 : 0;
-      $("p3k-spsa-pill").textContent = spRun ? `Tuning (${spd ? spd.threads : 2}T)` : spd && spd.iter > 0 ? `Saved (Iter ${spd.iter})` : "Idle";
+      $("p3k-spsa-pill").textContent = !forgeUnlocked
+        ? "🔒 Tier 2 First"
+        : !ph.nnue_v4_done
+        ? "🔒 Step 3 First"
+        : spRun
+        ? `Tuning (${spd ? spd.threads : 2}T)`
+        : ph.spsa_done
+        ? "✓ Step 4 Done"
+        : spd && spd.iter > 0
+        ? `Partial (Iter ${spd.iter})`
+        : "Idle";
       $("p3k-spsa-fill").style.width = `${Math.max(0, Math.min(100, spPct)).toFixed(1)}%`;
       $("p3k-spsa-pct").textContent = `${Math.round(spPct)}%`;
       $("p3k-spsa-iter").textContent = spd ? `${spd.iter || 0} / ${spd.max_iters || 150}` : "0 / 150";
@@ -5028,37 +5677,54 @@
       }
     }
 
-    // 4. Big 16x768 -> 1024 NNUE v4 GPU Trainer
+    // 3. Big 16x768 -> 1024 NNUE v4 GPU Trainer (Locked until Tier 2 Done AND Step 2 Marked Complete)
     const nn = d.nnue_v4 || {};
     const nnd = nn.detail || null;
     const nnRun = Boolean(nn.running);
+    const nnUnlocked = forgeUnlocked && Boolean(ph.datagen_done);
     const nnCard = $("p3k-card-nnue");
     if (nnCard) {
+      nnCard.classList.toggle("locked-phase", !nnUnlocked);
       nnCard.classList.toggle("running", nnRun);
-      nnCard.classList.toggle("done", Boolean(nn.ready) && !nnRun);
+      nnCard.classList.toggle("done", Boolean(ph.nnue_v4_done) && !nnRun);
+      if ($("p3k-lock-nnue")) {
+        $("p3k-lock-nnue").classList.toggle("hidden", nnUnlocked);
+        $("p3k-lock-nnue").innerHTML = !forgeUnlocked
+          ? "&#128274; Locked: Finish <strong>Tier 2</strong> &amp; prior Tier 3 steps first."
+          : "&#128274; Locked: Complete &amp; mark <strong>Step 2 (Self-Play Datagen)</strong> Done before training Big 1024 NNUE v4.";
+      }
       $("btn-p3k-nnue-start").classList.toggle("hidden", nnRun);
       $("btn-p3k-nnue-stop").classList.toggle("hidden", !nnRun);
-      $("btn-p3k-nnue-start").disabled = d.az_running || (dg.file_positions || 0) < 2048;
-      $("p3k-nnue-epochs").disabled = nnRun;
+      $("btn-p3k-nnue-start").disabled = !nnUnlocked || d.az_running || (dg.file_positions || 0) < 2048;
+      if ($("btn-p3k-done-nnue")) {
+        $("btn-p3k-done-nnue").textContent = ph.nnue_v4_done ? "✓ Step 3 Complete" : "✓ Mark Step 3 Complete";
+        $("btn-p3k-done-nnue").disabled = !nnUnlocked || Boolean(ph.nnue_v4_done) || !nn.ready;
+      }
+      $("p3k-nnue-epochs").disabled = nnRun || !nnUnlocked;
       const nnPct = nnRun && nnd ? nnd.progress_pct || 0 : nn.ready ? 100 : 0;
-      $("p3k-nnue-pill").textContent = nnRun
+      $("p3k-nnue-pill").textContent = !forgeUnlocked
+        ? "🔒 Tier 2 First"
+        : !ph.datagen_done
+        ? "🔒 Step 2 First"
+        : nnRun
         ? `GPU Epoch ${nnd ? nnd.epoch : 0}/${nnd ? nnd.epochs : 24}`
+        : ph.nnue_v4_done
+        ? "✓ Step 3 Done!"
         : nn.ready
-        ? "✓ 1024 NNUE v4 Live!"
-        : (dg.file_positions || 0) >= 2048
-        ? "Ready to Train"
-        : "Waiting for Data";
+        ? "Trained (Mark Done!)"
+        : "Ready to Train";
       $("p3k-nnue-fill").style.width = `${Math.max(0, Math.min(100, nnPct)).toFixed(1)}%`;
       $("p3k-nnue-pct").textContent = `${Math.round(nnPct)}%`;
-      $("p3k-nnue-msg").textContent =
-        (nnd && nnd.message) ||
-        (nn.ready
-          ? "data/titan_v6_1024.nnue loaded automatically by Apex-C Pure & Syzygy!"
-          : (dg.file_positions || 0) >= 2048
-          ? `${(dg.file_positions || 0).toLocaleString()} positions ready — pause Zero-C & click Train!`
-          : "Collect positions in Stage 2 first");
+      $("p3k-nnue-msg").textContent = !forgeUnlocked
+        ? "Complete Tier 2 (Zero-C v2 + Singularity v5) first!"
+        : !nnUnlocked
+        ? "Complete & mark Step 2 (Self-Play Datagen) Done first!"
+        : (nnd && nnd.message) ||
+          (nn.ready
+            ? "data/titan_v6_1024.nnue live! Mark Step 3 Done to unlock SPSA."
+            : `${(dg.file_positions || 0).toLocaleString()} positions ready — pause Zero-C & click Train!`);
       $("p3k-nnue-val").textContent = nnd && nnd.best_val_mse != null ? String(nnd.best_val_mse) : "—";
-      if (nn.ready && !p3kNnueWasReady) {
+      if (nn.ready && forgeUnlocked && !p3kNnueWasReady) {
         p3kNnueWasReady = true;
         api("/api/state", "GET").then((fresh) => {
           if (fresh && fresh.ok) {
@@ -5078,6 +5744,23 @@
           : `${(dg.file_positions || 0).toLocaleString()}`;
       $("home-p3k-nnue").textContent = nn.ready ? "✓ 1024 Live" : nnRun ? "Training..." : "Pending";
     }
+
+    // Per-Stage Progress & Audit Charts + Live Status Pill
+    renderSyzygyChart(syz);
+    if (!dgStatsCache || Date.now() - dgStatsLastFetch > 12000) {
+      dgStatsLastFetch = Date.now();
+      api("/api/p3k/datagen/stats", "GET").then((st) => {
+        if (st && st.ok && st.stats) {
+          dgStatsCache = st.stats;
+        }
+        renderDatagenCharts(dg, dgStatsCache);
+      });
+    } else {
+      renderDatagenCharts(dg, dgStatsCache);
+    }
+    renderSpsaCharts(spd);
+    renderNnueCharts(nnd);
+    updateGlobalLivePill();
   }
 
   function renderToyStatus(t) {
@@ -5092,11 +5775,27 @@
     const hist = det ? det.history || [] : [];
     const lastH = hist.length > 0 ? hist[hist.length - 1] : null;
     const pct = Math.min(100, (gen / 60) * 100);
+    const toyDone = Boolean(
+      (p3kLastData && p3kLastData.toy_done) ||
+        (det && det.phase === "complete") ||
+        (!run && gen >= 60)
+    );
 
     card.classList.toggle("running", run);
-    card.classList.toggle("done", !run && gen >= 60);
-    $("toy-pill").textContent = run ? `Training Gen ${gen}` : gen >= 60 ? "✓ Sprint Done!" : gen > 0 ? `Saved Gen ${gen}` : "Ready";
+    card.classList.toggle("done", !run && toyDone);
+    $("toy-pill").textContent = run
+      ? `Training Gen ${gen}/60`
+      : toyDone
+      ? `✓ Sprint Complete! (Gen ${gen})`
+      : gen > 0
+      ? `Saved Gen ${gen}/60`
+      : "Ready";
     $("btn-toy-start").classList.toggle("hidden", run);
+    $("btn-toy-start").innerHTML = toyDone
+      ? "&#9654; Continue Beyond Gen 60"
+      : gen > 0
+      ? "&#9654; Resume Toy Sprint"
+      : "&#9654; Start Toy Sprint";
     $("btn-toy-stop").classList.toggle("hidden", !run);
     $("btn-toy-start").disabled = Boolean(t.az_running);
     if ($("btn-toy-play")) $("btn-toy-play").classList.toggle("hidden", !t.has_ckpt);
@@ -5108,7 +5807,24 @@
     $("toy-loss").textContent = lastH ? String(lastH.loss) : "—";
     $("toy-msg").textContent = t.az_running
       ? "Zero-C v2 is using the GPU — pause v2 to run a 15-min Toy Sprint!"
+      : toyDone
+      ? (det && det.message) || `Sprint complete at Gen ${gen}! Zero-C Lite (#20) is ready to play & calibrate.`
       : (det && det.message) || "Ready for a quick 15-min tabula rasa sprint!";
+
+    if (toyDone && t.has_ckpt && !toyDoneRefreshed) {
+      toyDoneRefreshed = true;
+      api("/api/state", "GET").then((fresh) => {
+        if (fresh && fresh.ok) {
+          state = fresh;
+          populatePresets(state.presets);
+        }
+      });
+    } else if (!toyDone) {
+      toyDoneRefreshed = false;
+    }
+
+    renderToyCharts(t);
+    updateGlobalLivePill();
   }
 
   function renderRoadCampaign() {
@@ -5116,22 +5832,29 @@
     const p3k = p3kLastData || {};
     const syz = p3k.syzygy || {};
     const dg = p3k.datagen || {};
-    const nn = p3k.nnue_v4 || {};
     const comp = az.completion ? az.completion : computeClientCompletion(az);
+    const ph = p3k.phases || {};
 
     const syzFrac = Math.min(1, (syz.files || 0) / Math.max(1, syz.target_files || 290));
-    const syzDone = Boolean(syz.ready) && (syz.files || 0) >= 285;
-    const zcFrac = az.hybrids_unlocked || comp.is_complete ? 1 : Math.min(0.99, (comp.progress_pct || 0) / 100);
-    const zcDone = Boolean(az.hybrids_unlocked || comp.is_complete);
-    const singDone = Boolean(az.nnue_distilled);
+    const syzDone = Boolean(ph.syzygy_done);
+    const zcDone = Boolean(az.v2_graduated || comp.is_complete || ph.zeroc_done);
+    const zcFrac = zcDone ? 1 : Math.min(0.99, (comp.progress_pct || 0) / 100);
+    const singDone = Boolean(ph.distill_done || az.nnue_distilled);
+    const tier2Done = Boolean(p3k.tier2_done || (zcDone && singDone));
     const dgFrac = Math.min(1, (dg.file_positions || 0) / 25000000);
-    const nnDone = Boolean(nn.ready);
-    const forgeFrac = nnDone ? 1 : 0.7 * dgFrac;
+    const nnDone = Boolean(ph.nnue_v4_done);
+    const spsaDone = Boolean(ph.spsa_done);
+    const forgeFrac = 0.2 * syzFrac + 0.25 * dgFrac + 0.35 * (nnDone ? 1 : 0) + 0.2 * (spsaDone ? 1 : 0);
+    const forgeDone = Boolean(tier2Done && syzDone && ph.datagen_done && nnDone && spsaDone);
 
-    // Master weighted 0..100% progress reflecting exact partial progress on disk!
+    const toyDet = toyLastData && toyLastData.detail ? toyLastData.detail : null;
+    const toyGen = toyDet ? toyDet.gen || 0 : 0;
+    const toyDone = Boolean(p3k.toy_done || (toyDet && toyDet.phase === "complete") || toyGen >= 60);
+
+    // Master weighted 0..100% progress reflecting Tier 1 -> Tier 2 -> Tier 3
     const masterPct = Math.min(
       100,
-      Math.round(15 + 10 * syzFrac + 30 * zcFrac + 10 * (singDone ? 1 : 0) + 35 * forgeFrac)
+      Math.round(15 + 30 * zcFrac + 15 * (singDone ? 1 : 0) + 40 * forgeFrac)
     );
 
     const unlockedCount = FIGHTERS_ROSTER.filter((f) => !isFighterLocked(f)).length;
@@ -5141,87 +5864,82 @@
     if ($("r3k-master-pct")) $("r3k-master-pct").textContent = `${masterPct}%`;
     if ($("r3k-master-unlocked")) $("r3k-master-unlocked").textContent = `Challengers: ${unlockedCount} / ${totalCount} Unlocked`;
     if ($("r3k-master-sub")) {
-      $("r3k-master-sub").textContent = nnDone
-        ? "🏆 3,000+ Elo Grandmaster Crusher Forged! Challenge Apex-C 3000 & the Mythic Hybrids!"
-        : `Zero-C v2 at Gen ${az.gen || 0} (${Math.round(zcFrac * 100)}%) • Syzygy ${syz.files || 0}/290 • Datagen ${((dg.file_positions || 0) / 1e6).toFixed(2)}M/25M`;
+      $("r3k-master-sub").textContent = forgeDone
+        ? "🏆 Tier 1 → Tier 2 → Tier 3 Complete! Challenge Apex-C, Singularity v5 & all Mythic Hybrids!"
+        : tier2Done
+        ? `✓ Tier 2 Complete! Tier 3 Forge Open: Syzygy ${syz.files || 0}/290 • Datagen ${((dg.file_positions || 0) / 1e6).toFixed(1)}M • NNUE v4 ${nnDone ? "✓" : "Pending"} • SPSA ${spsaDone ? "✓" : "Pending"}`
+        : `Tier 1 ✓  →  Tier 2 Zero-C v2 Gen ${az.gen || 0} (${Math.round(zcFrac * 100)}%) & Singularity ${singDone ? "✓" : "Pending"}  →  Tier 3 Locked Until Tier 2 Complete`;
     }
     if ($("home-r3k-fill")) $("home-r3k-fill").style.width = `${masterPct}%`;
     if ($("home-r3k-pct")) $("home-r3k-pct").textContent = `${masterPct}%`;
     if ($("home-r3k-unlocked")) $("home-r3k-unlocked").textContent = `${unlockedCount} / ${totalCount}`;
     if ($("home-az-pill")) {
       const runningTag = az.running ? "Training • " : "";
-      $("home-az-pill").textContent = `${runningTag}Road to 3K • ${masterPct}%`;
+      $("home-az-pill").textContent = `${runningTag}Pipeline • ${masterPct}%`;
       $("home-az-pill").classList.toggle("active", Boolean(az.running || masterPct >= 100));
     }
 
     const chapters = [
       {
-        num: "Chapter 1",
-        title: "⚔️ The Iron Guild (Base C11)",
-        desc: "Classic Alpha-Beta + Full Correction History + Capture/Cut LMR (~2,550–2,580 Elo). Starts Apex-C at Lv 1/4 Prototype!",
+        num: "Tier 1 • Iron Guild",
+        title: "🏰 Titan-C Colossi & Chronos Archive",
+        desc: "Baseline C11 / AVX2 NNUE v3 guild (L1–L6) plus retired Zero-C v1 (Gen 4320). Ready to play and calibrate immediately from the start!",
         pct: 100,
         done: true,
         active: false,
-        rewards: ["titan-1", "titan-4", "titan-6", "apex-pure"],
-        btnTxt: "🛡️ Inspect Guild",
+        rewards: ["titan-1", "titan-4", "titan-6", "zero-v1"],
+        btnTxt: "⚔ Inspect Guild in Fighters",
         action: () => {
           closeAzModal(true);
           openFightersModal("titan-6");
         },
       },
       {
-        num: "Chapter 2",
-        title: "📚 5-Piece Syzygy Vault",
-        desc: "One-click ~939 MB endgame tablebase download (0% GPU) — unlocks & evolves Apex-C + Syzygy to Lv 2/5 (+70 Elo)!",
-        pct: Math.round(syzFrac * 100),
-        done: syzDone,
-        active: !syzDone,
-        rewards: ["apex-syzygy"],
-        btnTxt: syzDone ? "✓ Installed — Open Forge" : "⬇ Open Syzygy Download",
-        action: () => setR3kTab("forge", true),
-      },
-      {
-        num: "Chapter 3",
-        title: "🧠 Awaken Zero-C v2 (AlphaZero)",
-        desc: "Train a pure tabula rasa 10×128 neural mind on your RTX GPU to pass the 4 Convergence Gates.",
+        num: "Tier 2 • Neural Guild Step 1",
+        title: "🧠 Zero-C v2 (10×128 AlphaZero)",
+        desc: "Pure rules-only self-play GPU training. Playable from Gen 0; hit 500k games or mark partial compute Complete once trained to unlock Distillation.",
         pct: Math.round(zcFrac * 100),
         done: zcDone,
         active: !zcDone,
-        rewards: ["zero-v2", "hybrid-dual", "hybrid-lmr", "hybrid-omega"],
-        btnTxt: az.running ? "📊 View Live Zero-C Charts" : "🧠 Open Zero-C v2 Lab",
+        rewards: ["zero-v2"],
+        btnTxt: az.running ? "📊 View Live Zero-C Charts" : "🧠 Open Tier 2: Zero-C v2",
         action: () => setR3kTab("zeroc", true),
       },
       {
-        num: "Chapter 4",
-        title: "⚡ Distill Singularity v5",
-        desc: "Compress Zero-C v2's 3.56M ResNet into a blazing-fast 200ns AVX2 CPU NNUE (~3 min on GPU).",
+        num: "Tier 2 • Capstone Step 2",
+        title: "⚡ Distill Singularity v5 (#17)",
+        desc: zcDone
+          ? "Compress Zero-C v2's 3.56M ResNet into a 200ns AVX2 NNUE and mark Tier 2 Done to unlock Tier 3 (Mythic Hybrids & Apex Forge)!"
+          : "🔒 Finish & mark Zero-C v2 Complete first, then distill Singularity v5 as the Zero-C Neural Guild capstone.",
         pct: singDone ? 100 : 0,
         done: singDone,
         active: zcDone && !singDone,
         rewards: ["hybrid-nnue"],
-        btnTxt: singDone ? "✓ Singularity Unlocked!" : "⚡ Go to Distillation Forge",
+        btnTxt: singDone ? "✓ Singularity Unlocked!" : "⚡ Distill in Tier 2 Lab",
         action: () => setR3kTab("zeroc", true),
       },
       {
-        num: "Chapter 5",
-        title: "🔥 Forge 3,000+ Elo Apex-C v4",
-        desc: "Generate 25M–50M positions (safe on 2 CPU threads alongside Zero-C!), tune SPSA, & train 1024-wide NNUE v4!",
+        num: "Tier 3 • Final Ascension",
+        title: "🔥 Mythic Hybrids & Apex Forge",
+        desc: tier2Done
+          ? "1. Syzygy (awakens Hybrids #14–#16) → 2. Datagen (Singularity v5 Pass 1 / v4 Pass 2) → 3. 1024 NNUE v4 → 4. SPSA Search Tune LAST."
+          : "🔒 Locked until Tier 2 (Zero-C v2 + Singularity v5) is 100% done — so Apex trains atop your best completed neural model!",
         pct: Math.round(forgeFrac * 100),
-        done: nnDone,
-        active: !nnDone,
-        rewards: ["apex-pure", "apex-syzygy"],
-        btnTxt: "🔥 Open 3000 Forge",
+        done: forgeDone,
+        active: tier2Done && !forgeDone,
+        rewards: ["hybrid-dual", "hybrid-lmr", "hybrid-omega", "apex-pure", "apex-syzygy"],
+        btnTxt: tier2Done ? "🔥 Open Tier 3 Forge" : "🔒 Finish Tier 2 First",
         action: () => setR3kTab("forge", true),
       },
       {
         num: "Side Quest",
         title: "⚡ 15-Min Toy Net Sprint",
-        desc: "Short on time? Spin up a fast Tiny 4×64 sandbox net in data/az_toy/ and watch it learn chess in 15 min!",
-        pct: toyLastData && toyLastData.detail ? Math.min(100, Math.round(((toyLastData.detail.gen || 0) / 60) * 100)) : 0,
-        done: Boolean(toyLastData && toyLastData.detail && (toyLastData.detail.gen || 0) >= 60),
+        desc: "Isolated fast 4×64 sandbox in data/az_toy/ (60 gens). Unlocks Zero-C Lite (#20) in minutes without touching your main pipeline.",
+        pct: Math.min(100, Math.round((toyGen / 60) * 100)),
+        done: toyDone,
         active: false,
-        rewards: ["zero-v1"],
-        btnTxt: "⚡ Open Toy Net Lab",
+        rewards: ["zero-toy"],
+        btnTxt: toyDone ? "✓ Sprint Complete — Inspect" : "⚡ Open Toy Net Lab",
         action: () => setR3kTab("toy", true),
       },
     ];
@@ -5342,18 +6060,13 @@
     });
   }
   if ($("btn-toy-reset")) {
-    $("btn-toy-reset").addEventListener("click", async () => {
-      if (!window.confirm("Reset ONLY the 15-min Toy Net (data/az_toy/) to Gen 0? Your main Zero-C v2 run is untouched!")) return;
-      const arch = ($("toy-arch") && $("toy-arch").value) || "tiny";
-      const res = await api("/api/toy/start", "POST", { arch, reset: true });
-      if (res && res.ok) renderToyStatus(res);
-    });
+    $("btn-toy-reset").addEventListener("click", () => handleResetStep("toy", "15-Min Toy Net (data/az_toy/)"));
   }
   if ($("btn-toy-play")) {
     $("btn-toy-play").addEventListener("click", async () => {
       closeAzModal(true);
       showBoardWorkspace();
-      await startNewGame("white", 12, 12, "", 0, "data/az_toy/latest.pt");
+      await startNewGame("white", 20, 20);
     });
   }
   if ($("btn-toy-play-v1")) {
@@ -5368,11 +6081,13 @@
     $("btn-p3k-dg-start").addEventListener("click", async () => {
       const threads = parseInt($("p3k-dg-threads").value, 10) || 2;
       const millions = parseInt($("p3k-dg-millions").value, 10) || 25;
-      const res = await api("/api/p3k/datagen/start", "POST", { threads, millions, nodes: 5000 });
+      const teacher = ($("p3k-dg-teacher") && $("p3k-dg-teacher").value) || "auto";
+      const res = await api("/api/p3k/datagen/start", "POST", { threads, millions, nodes: 5000, teacher });
       if (res && res.ok) {
         renderP3kStatus(res);
-        logTerm(`Started Project 3000 Datagen (${threads}T, nice 15, +${millions}M positions).`, "term-ok");
+        logTerm(`Started Project 3000 Datagen (${threads}T, +${millions}M pos, teacher=${teacher}).`, "term-ok");
       } else {
+        window.alert((res && res.error) || "Could not start Datagen.");
         logTerm((res && res.error) || "Could not start Datagen.", "term-err");
       }
     });
@@ -5426,6 +6141,221 @@
   }
 
   // ==========================================================================
+  // Phase Completion Gating (No Skipping) + Reports Archive
+  // ==========================================================================
+  async function handlePhaseComplete(step, friendlyName) {
+    const ok = window.confirm(
+      `✓ MARK PHASE COMPLETE\n\nMark "${friendlyName}" as Done?\n\nThis unlocks the next phase in your pipeline! You can still re-run or Reset this step anytime.`
+    );
+    if (!ok) return;
+    const res = await api("/api/p3k/phase_complete", "POST", { step });
+    if (!res || !res.ok) {
+      window.alert((res && res.error) || "Run at least partial compute before marking this phase complete.");
+      return;
+    }
+    logTerm(`✓ Marked ${friendlyName} Complete — next training phase unlocked!`, "term-ok");
+    renderP3kStatus(res);
+    const fresh = await api("/api/state", "GET");
+    if (fresh && fresh.ok) {
+      state = fresh;
+      populatePresets(state.presets);
+    }
+    await pollAzStatus();
+  }
+
+  if ($("btn-p3k-done-syzygy")) $("btn-p3k-done-syzygy").addEventListener("click", () => handlePhaseComplete("syzygy", "Tier 3 Step 1: 5-Piece Syzygy"));
+  if ($("btn-p3k-done-datagen")) $("btn-p3k-done-datagen").addEventListener("click", () => handlePhaseComplete("datagen", "Tier 3 Step 2: Self-Play Datagen"));
+  if ($("btn-p3k-done-nnue")) $("btn-p3k-done-nnue").addEventListener("click", () => handlePhaseComplete("nnue_v4", "Tier 3 Step 3: 1024 NNUE v4"));
+  if ($("btn-p3k-done-spsa")) $("btn-p3k-done-spsa").addEventListener("click", () => handlePhaseComplete("spsa", "Tier 3 Step 4: SPSA Search Tuner"));
+  if ($("btn-az-done-distill")) $("btn-az-done-distill").addEventListener("click", () => handlePhaseComplete("distill", "Tier 2 Capstone: Singularity v5 Distillation"));
+
+  async function handleResetStep(step, friendlyName) {
+    const ok = window.confirm(
+      `⚠️ RESET STAGE PROGRESS\n\nReset "${friendlyName}" back to 0%?\n\nThis will delete this stage's trained weights/dataset/telemetry and its saved stage report so you can start it completely fresh. Dependent stages may lock until re-trained (or skipped).`
+    );
+    if (!ok) return;
+    const res = await api("/api/p3k/reset_step", "POST", { step });
+    if (!res || !res.ok) {
+      window.alert((res && res.error) || "Could not reset step.");
+      return;
+    }
+    if (step === "datagen") {
+      dgStatsCache = null;
+      dgStatsLastFetch = 0;
+    }
+    if (step === "zeroc") azWasCompleteToastShown = false;
+    if (step === "distill") window._singularityUnlockedRefreshed = false;
+    if (step === "nnue_v4") p3kNnueWasReady = false;
+    if (step === "syzygy") p3kSyzWasReady = false;
+    logTerm(`↺ Reset ${friendlyName}: ${res.message}`, "term-warn");
+    const fresh = await api("/api/state", "GET");
+    if (fresh && fresh.ok) {
+      state = fresh;
+      populatePresets(state.presets);
+    }
+    await pollAzStatus();
+  }
+
+  if ($("btn-p3k-reset-syzygy")) $("btn-p3k-reset-syzygy").addEventListener("click", () => handleResetStep("syzygy", "5-Piece Syzygy Tablebases"));
+  if ($("btn-p3k-reset-datagen")) $("btn-p3k-reset-datagen").addEventListener("click", () => handleResetStep("datagen", "Self-Play Datagen (data/datagen_v4.bin)"));
+  if ($("btn-p3k-reset-nnue")) $("btn-p3k-reset-nnue").addEventListener("click", () => handleResetStep("nnue_v4", "1024 NNUE v4 (data/titan_v6_1024.nnue)"));
+  if ($("btn-p3k-reset-spsa")) $("btn-p3k-reset-spsa").addEventListener("click", () => handleResetStep("spsa", "SPSA Search Tuner (data/spsa_best.json)"));
+  if ($("btn-az-reset")) $("btn-az-reset").addEventListener("click", () => handleResetStep("zeroc", "Zero-C v2 AlphaZero (446k+ games / data/az/)"));
+  if ($("btn-az-reset-distill")) $("btn-az-reset-distill").addEventListener("click", () => handleResetStep("distill", "Singularity v5 Distilled NNUE"));
+
+  async function openReportsView(focusId = null) {
+    activateStudioView("reports-view", "/reports", "Stage Training Reports Archive");
+    syncUrl("/reports");
+    const grid = $("reports-grid");
+    if (grid) grid.innerHTML = `<div class="empty-hint">Loading stage reports...</div>`;
+    let repData = await api("/api/reports", "GET");
+    if (!repData || !repData.reports || repData.reports.length === 0) {
+      await api("/api/reports/generate", "POST");
+      repData = await api("/api/reports", "GET");
+    }
+    renderReportsArchive(repData, focusId);
+  }
+
+  function renderReportsArchive(repData, focusId = null) {
+    const grid = $("reports-grid");
+    if (!grid) return;
+    const reps = (repData && repData.reports) || [];
+    if (reps.length === 0) {
+      grid.innerHTML = `<div class="empty-hint">No stage training artifacts generated yet. Start any training step or click Snapshot All Stage Reports!</div>`;
+      return;
+    }
+    const stageRouteMap = {
+      syzygy: "/project-3000",
+      datagen: "/project-3000",
+      nnue_v4: "/project-3000",
+      spsa: "/project-3000",
+      zeroc_v2: "/zero-c",
+      distill: "/zero-c",
+    };
+    grid.innerHTML = reps
+      .map((r, idx) => {
+        const hl = r.health === "warn" ? "health-warn" : "";
+        const metricsHtml = (r.metrics || [])
+          .map((m) => `<div class="report-metric-tile"><span>${m.label}</span><strong>${m.value}</strong></div>`)
+          .join("");
+        return `<article class="report-card ${hl}" id="rep-card-${r.id}">
+          <div class="report-card-head">
+            <div>
+              <div class="report-stage-tag">${r.stage || "Pipeline Stage"}</div>
+              <h3>${r.title}</h3>
+            </div>
+            <span class="report-status-pill ${r.health === "warn" ? "warn" : ""}">${
+          r.status === "complete" ? "✓ Complete" : "⏳ In Progress"
+        }</span>
+          </div>
+          <p style="font-size:12.5px;color:#dce4ee;">${r.summary || ""}</p>
+          <div class="report-metrics-grid">${metricsHtml}</div>
+          <div class="p3k-chart-box" style="margin-top:0;">
+            <div class="p3k-chart-hdr"><strong>Stage Snapshot Chart</strong><span>${r.updated_at || ""}</span></div>
+            <canvas id="rep-cvs-${idx}" class="p3k-canvas" height="125"></canvas>
+          </div>
+          <div class="report-diag">${r.diagnosis || ""}</div>
+          <div class="report-next">
+            <span><strong>Next:</strong> ${r.next_step || ""}</span>
+            <button type="button" class="btn btn-sm" data-nav="${stageRouteMap[r.id] || "/road-to-3k"}">Open Lab &rarr;</button>
+          </div>
+        </article>`;
+      })
+      .join("");
+
+    // Render mini historical charts inside each report card!
+    reps.forEach((r, idx) => {
+      const cvs = $(`rep-cvs-${idx}`);
+      if (!cvs) return;
+      const cs = r.chart_series || {};
+      if (r.id === "syzygy") {
+        drawCanvasBarChart(cvs, ["WDL", "DTZ", "Missing"], [cs.wdl_files || 0, cs.dtz_files || 0, Math.max(0, 290 - (cs.files || 0))], {
+          height: 120,
+          colors: ["#39c5cf", "#58a6ff", "#484f58"],
+        });
+      } else if (r.id === "datagen" && cs.eval_hist) {
+        drawCanvasBarChart(cvs, cs.eval_hist.labels, cs.eval_hist.counts, { height: 120, color: "#f0883e" });
+      } else if (r.id === "nnue_v4" && Array.isArray(cs.history)) {
+        drawCanvasLineChart(
+          cvs,
+          cs.history.map((h) => `Ep ${h.epoch}`),
+          [
+            { label: "Train MSE", vals: cs.history.map((h) => h.train_mse), color: "#58a6ff" },
+            { label: "Val MSE", vals: cs.history.map((h) => h.val_mse), color: "#ffd97d" },
+          ],
+          { height: 120 }
+        );
+      } else if (r.id === "spsa" && Array.isArray(cs.history)) {
+        drawCanvasLineChart(
+          cvs,
+          cs.history.map((h) => `#${h.iter}`),
+          [{ label: "+delta Win%", vals: cs.history.map((h) => h.win_pct), color: "#a371f7" }],
+          { height: 120, yMin: 15, yMax: 85, refLine: 50, refMin: 15, refMax: 85 }
+        );
+      } else if (r.id === "zeroc_v2" && Array.isArray(cs.history)) {
+        drawCanvasLineChart(
+          cvs,
+          cs.history.map((h) => `G${h.gen}`),
+          [
+            { label: "Policy Acc%", vals: cs.history.map((h) => h.pol_acc), color: "#d2a8ff" },
+            { label: "Pol Loss", vals: cs.history.map((h) => h.pol_loss), color: "#58a6ff", axis: "right" },
+          ],
+          { height: 120, rightAxis: true }
+        );
+      } else if (r.id === "distill" && Array.isArray(cs.history)) {
+        drawCanvasLineChart(
+          cvs,
+          cs.history.map((h) => `Ep ${h.epoch}`),
+          [
+            { label: "Train MSE", vals: cs.history.map((h) => h.train_mse), color: "#39c5cf" },
+            { label: "Val MSE", vals: cs.history.map((h) => h.val_mse), color: "#ffd97d" },
+          ],
+          { height: 120 }
+        );
+      }
+    });
+
+    grid.querySelectorAll("[data-nav]").forEach((btn) => {
+      btn.addEventListener("click", () => applyRouteFromUrl(btn.dataset.nav, false));
+    });
+    if (focusId && $(`rep-card-${focusId}`)) {
+      $(`rep-card-${focusId}`).scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }
+
+  if ($("btn-home-reports")) $("btn-home-reports").addEventListener("click", () => openReportsView());
+  if ($("btn-reports-refresh")) {
+    $("btn-reports-refresh").addEventListener("click", async () => {
+      await api("/api/reports/generate", "POST");
+      await openReportsView();
+      logTerm("Refreshed all stage training reports in data/reports/!", "term-ok");
+    });
+  }
+  document.querySelectorAll("[data-open-report]").forEach((btn) => {
+    btn.addEventListener("click", () => openReportsView(btn.dataset.openReport));
+  });
+  if ($("sb-nav")) {
+    $("sb-nav").querySelectorAll(".sb-link[data-nav]").forEach((btn) => {
+      btn.addEventListener("click", () => applyRouteFromUrl(btn.dataset.nav, false));
+    });
+  }
+  if ($("btn-sidebar-toggle") && $("studio-sidebar")) {
+    $("btn-sidebar-toggle").addEventListener("click", () => {
+      $("studio-sidebar").classList.toggle("collapsed");
+    });
+  }
+  if ($("live-job-pill")) {
+    $("live-job-pill").addEventListener("click", () => {
+      applyRouteFromUrl($("live-job-pill").dataset.targetRoute || "/road-to-3k", false);
+    });
+  }
+  if ($("sb-footer-card")) {
+    $("sb-footer-card").addEventListener("click", () => {
+      applyRouteFromUrl(($("live-job-pill") && $("live-job-pill").dataset.targetRoute) || "/road-to-3k", false);
+    });
+  }
+
+  // ==========================================================================
   // Client-Side History API URL Router (Back / Forward / Direct URL / Refresh)
   // ==========================================================================
   let isPoppingRoute = false;
@@ -5435,15 +6365,16 @@
     "/play": "♞ Play • Chess-in-C",
     "/analysis": "🔍 Analysis • Chess-in-C",
     "/puzzles": "🧩 Tactical Puzzles • Chess-in-C",
-    "/fighters": "🛡️ Hall of Champions • Chess-in-C",
-    "/road-to-3k": "🚀 Road to 3K • Chess-in-C",
-    "/project-3000": "🔥 3000 Forge • Road to 3K",
-    "/zero-c": "🧠 Zero-C v2 Lab • Road to 3K",
-    "/toy-net": "⚡ Toy Net Sprint • Road to 3K",
+    "/fighters": "🛡️ Fighters & Mechanics • Chess-in-C",
+    "/road-to-3k": "🗺️ Campaign Roadmap • Chess-in-C",
+    "/project-3000": "🔥 Tier 3: Apex & Hybrid Forge • Chess-in-C",
+    "/zero-c": "🧠 Tier 2: Zero-C & Singularity • Chess-in-C",
+    "/toy-net": "⚡ 15-Min Toy Net • Chess-in-C",
     "/spectate": "👁️ Spectate Training • Chess-in-C",
-    "/elo-arena": "🏆 Elo Arena • Chess-in-C",
+    "/elo-arena": "🏆 Elo Lab (15 Bots) • Chess-in-C",
     "/elo-calculator": "🎯 Elo Calculator • Chess-in-C",
-    "/history": "📜 Game History • Chess-in-C",
+    "/history": "📜 Game Archive • Chess-in-C",
+    "/reports": "📊 Stage Reports Archive • Chess-in-C",
     "/review": "★ Game Review • Chess-in-C",
   };
 
@@ -5471,19 +6402,11 @@
   }
 
   function closeAllOverlayModalsSilent() {
-    if (!$("az-modal").classList.contains("hidden")) {
-      $("az-modal").classList.add("hidden");
-      stopAzPolling();
-    }
-    if (!$("gauntlet-modal").classList.contains("hidden")) {
-      $("gauntlet-modal").classList.add("hidden");
-      stopGauntletPolling();
-    }
-    if ($("history-modal")) $("history-modal").classList.add("hidden");
-    if ($("fighters-modal")) $("fighters-modal").classList.add("hidden");
     if ($("review-modal")) $("review-modal").classList.add("hidden");
     if ($("puzzle-modal")) $("puzzle-modal").classList.add("hidden");
-    if ($("bots-here-modal")) $("bots-here-modal").classList.add("hidden");
+    if ($("bots-from-here-modal")) $("bots-from-here-modal").classList.add("hidden");
+    if ($("fen-modal")) $("fen-modal").classList.add("hidden");
+    if ($("pgn-modal")) $("pgn-modal").classList.add("hidden");
   }
 
   async function applyRouteFromUrl(rawPath, isBoot = false) {
@@ -5494,36 +6417,30 @@
       closeAllOverlayModalsSilent();
       if (path === "/" || path === "/index.html") {
         await showHomeMenu();
-        pollP3kStatus();
+        pollAzStatus();
       } else if (path === "/road-to-3k") {
-        if (isBoot) await showHomeMenu();
         await openAzModal("map");
       } else if (path === "/project-3000") {
-        if (isBoot) await showHomeMenu();
         await openAzModal("forge");
       } else if (path === "/toy-net") {
-        if (isBoot) await showHomeMenu();
         await openAzModal("toy");
       } else if (path === "/fighters") {
-        if (isBoot) await showHomeMenu();
         openFightersModal();
       } else if (path === "/zero-c") {
-        if (isBoot) await showHomeMenu();
         await openAzModal("zeroc");
+      } else if (path === "/reports") {
+        await openReportsView();
       } else if (path === "/spectate" || path.startsWith("/spectate/")) {
         const seg = path.split("/")[2];
         const gid = seg && /^\d+$/.test(seg) ? Math.max(0, parseInt(seg, 10) - 1) : -1;
         await startSpectateTraining(gid);
       } else if (path === "/elo-arena") {
-        if (isBoot) await showHomeMenu();
         setGauntletTab("gauntlet", false);
         await openGauntletModal();
       } else if (path === "/elo-calculator") {
-        if (isBoot) await showHomeMenu();
         setGauntletTab("calc", false);
         await openGauntletModal();
       } else if (path === "/history") {
-        if (isBoot) await showHomeMenu();
         await openHistoryModal();
       } else if (path === "/review") {
         showBoardWorkspace();
@@ -5567,20 +6484,13 @@
       const savedTheme = localStorage.getItem("chess_in_c_theme");
       if (savedTheme) applyBoardTheme(savedTheme);
     } catch (_) {}
-    logTerm("Chess-in-C Studio connected to Titan-C v4 (Alpha-Beta NNUE v3) + Zero-C (AlphaZero MCTS).", "term-ok");
-    logTerm(
-      "Drag/click pieces, right-drag for arrows, or type SAN/commands ('analyze', 'import', 'eval', 'autoflip', 'help').",
-      "term-dim"
-    );
+    logTerm("Chess-in-C Studio connected to Titan-C / Apex-C (C11 NNUE) + Zero-C (AlphaZero MCTS).", "term-ok");
     const data = await api("/api/state", "GET");
     applyState(data, false);
-    if (state && state.stockfish_available) {
-      logTerm(`Stockfish ready: ${state.stockfish_name} (levels 7-11 unlocked!).`, "term-ok");
-    } else {
-      logTerm("Stockfish not found (install with 'sudo apt install stockfish' to unlock levels 7-11).", "term-dim");
-    }
     const initPath = window.location.pathname || "/";
     await applyRouteFromUrl(initPath, true);
+    pollAzStatus();
+    setInterval(updateGlobalLivePill, 5000);
     try {
       window.history.replaceState({ path: initPath }, "", initPath);
     } catch (_) {}

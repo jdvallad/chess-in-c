@@ -6,12 +6,20 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-#define MAX_GAUNTLET_THREADS      16
-#define GAUNTLET_NUM_LEVELS       7 // 1..6 = Titan-C L1..L6, 7 = Zero-C (AlphaZero)
-#define GAUNTLET_ZERO_C_LEVEL     7
-#define GAUNTLET_MAX_CALC_GAMES   120
-#define GAUNTLET_MAX_CALC_BUCKETS 16
-#define ELO_RATINGS_FILE          "data/elo_ratings.json"
+#define MAX_GAUNTLET_THREADS        16
+#define GAUNTLET_NUM_LEVELS         15 // 1..6 Titan-C, 7 Zero-C v2, 13 v1, 20 Toy, 14..17 Hybrids, 18..19 Apex
+#define GAUNTLET_ZERO_C_LEVEL       7
+#define GAUNTLET_ZERO_C_V1_LEVEL    13
+#define GAUNTLET_HYBRID_DUAL_LEVEL  14
+#define GAUNTLET_HYBRID_LMR_LEVEL   15
+#define GAUNTLET_HYBRID_OMEGA_LEVEL 16
+#define GAUNTLET_HYBRID_NNUE_LEVEL  17
+#define GAUNTLET_APEX_PURE_LEVEL    18
+#define GAUNTLET_APEX_SYZYGY_LEVEL  19
+#define GAUNTLET_TOY_LEVEL          20
+#define GAUNTLET_MAX_CALC_GAMES     120
+#define GAUNTLET_MAX_CALC_BUCKETS   16
+#define ELO_RATINGS_FILE            "data/elo_ratings.json"
 
 typedef struct elo_record {
     int level; // 1..6 = Titan-C, 7 = Zero-C (AlphaZero)
@@ -81,6 +89,8 @@ typedef struct elo_calc_status {
     int ci_high;
     bool converged;
     bool hit_sf_floor;
+    int sf_min_elo;
+    int sf_max_elo;
     int num_buckets;
     calc_anchor_stat buckets[GAUNTLET_MAX_CALC_BUCKETS];
 } elo_calc_status;
@@ -114,6 +124,10 @@ bool elo_save_file(const char *path, const elo_record levels[GAUNTLET_NUM_LEVELS
     const char *opponent, bool vs_stockfish);
 
 const char *gauntlet_level_name(int level);
+const char *gauntlet_level_engine(int level);
+int gauntlet_slot_to_level(int slot);
+int gauntlet_level_to_slot(int level);
+bool gauntlet_level_available(const gauntlet *g, int level);
 int gauntlet_cpu_count(void);
 gauntlet *gauntlet_create(const char *sf_path, const char *elo_file_path);
 void gauntlet_delete(gauntlet **g);

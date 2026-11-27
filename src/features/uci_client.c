@@ -28,6 +28,8 @@ struct uci_engine {
     bool has_configured;
     bool last_limit_strength;
     int last_elo;
+    int uci_elo_min;
+    int uci_elo_max;
 };
 
 static const sf_preset g_sf_presets[] = {
@@ -139,6 +141,21 @@ static bool uci_wait_token(uci_engine *eng, const char *token) {
                 *nl = '\0';
             }
             snprintf(eng->name, sizeof(eng->name), "%s", line + 8);
+        } else if (strncmp(line, "option name UCI_Elo type spin", 29) == 0) {
+            const char *pmin = strstr(line, " min ");
+            const char *pmax = strstr(line, " max ");
+            if (pmin) {
+                int mn = atoi(pmin + 5);
+                if (mn >= 400 && mn <= 3000) {
+                    eng->uci_elo_min = mn;
+                }
+            }
+            if (pmax) {
+                int mx = atoi(pmax + 5);
+                if (mx >= eng->uci_elo_min && mx <= 4000) {
+                    eng->uci_elo_max = mx;
+                }
+            }
         }
         if (strncmp(line, token, strlen(token)) == 0) {
             return true;
@@ -206,6 +223,8 @@ uci_engine *uci_create(const char *binary_path) {
     eng->pid = pid;
     eng->to_child = fdopen(in_pipe[1], "w");
     eng->from_child = fdopen(out_pipe[0], "r");
+    eng->uci_elo_min = 1350;
+    eng->uci_elo_max = 2850;
     snprintf(eng->path, sizeof(eng->path), "%s", resolved);
     snprintf(eng->name, sizeof(eng->name), "Stockfish");
 
@@ -277,6 +296,72 @@ const char *uci_get_name(const uci_engine *eng) {
 
 const char *uci_get_path(const uci_engine *eng) {
     return eng ? eng->path : "";
+}
+
+int uci_get_min_elo(const uci_engine *eng) {
+    return eng ? eng->uci_elo_min : 1350;
+}
+
+int uci_get_max_elo(const uci_engine *eng) {
+    return eng ? eng->uci_elo_max : 2850;
+}
+
+int uci_apply_spsa_file(uci_engine *eng, const char *json_path) {
+    if (!eng || !json_path || !json_path[0]) {
+        return 0;
+    }
+    FILE *fp = fopen(json_path, "rb");
+    if (!fp) {
+        return 0;
+    }
+    char buf[8192];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, fp);
+    fclose(fp);
+    buf[n] = '\0';
+
+    const char *p = strstr(buf, "\"params\"");
+    p = p ? strchr(p, '{') : strchr(buf, '{');
+    if (!p) {
+        return 0;
+    }
+    const char *end = strchr(p, '}');
+    if (!end) {
+        return 0;
+    }
+
+    int applied = 0;
+    while (p < end) {
+        const char *q1 = strchr(p, '"');
+        if (!q1 || q1 >= end) {
+            break;
+        }
+        const char *q2 = strchr(q1 + 1, '"');
+        if (!q2 || q2 >= end) {
+            break;
+        }
+        size_t klen = (size_t) (q2 - (q1 + 1));
+        char key[64];
+        if (klen > 0 && klen < sizeof(key)) {
+            memcpy(key, q1 + 1, klen);
+            key[klen] = '\0';
+            const char *colon = strchr(q2 + 1, ':');
+            if (colon && colon < end) {
+                const char *vp = colon + 1;
+                while (*vp == ' ' || *vp == '\t' || *vp == '\r' || *vp == '\n') {
+                    vp++;
+                }
+                if (*vp == '-' || (*vp >= '0' && *vp <= '9')) {
+                    int val = atoi(vp);
+                    char vstr[24];
+                    snprintf(vstr, sizeof(vstr), "%d", val);
+                    uci_set_option(eng, key, vstr);
+                    applied++;
+                }
+            }
+        }
+        p = q2 + 1;
+    }
+    return applied;
 }
 
 static void parse_info_line(const char *line, int *depth, int *score_cp, u64 *nodes,
@@ -433,11 +518,13 @@ static uci_search_result uci_search_internal(uci_engine *eng, const full_chess *
         return res;
     }
 
-    if (elo < 1320) {
-        elo = 1320;
+    int elo_min = (eng->uci_elo_min > 0) ? eng->uci_elo_min : 1350;
+    int elo_max = (eng->uci_elo_max >= elo_min) ? eng->uci_elo_max : 2850;
+    if (elo < elo_min) {
+        elo = elo_min;
     }
-    if (elo > 3190) {
-        elo = 3190;
+    if (elo > elo_max) {
+        elo = elo_max;
     }
 
     if (!eng->has_configured || eng->last_limit_strength != limit_strength

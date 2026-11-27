@@ -84,13 +84,8 @@ int main(int argc, char **argv) {
                 printed_done[i] = 1;
                 double score
                     = ((double) lp->wins + 0.5 * (double) lp->draws) / (double) lp->done_games;
-                char lbl[32];
-                if (lp->level == GAUNTLET_ZERO_C_LEVEL) {
-                    snprintf(lbl, sizeof(lbl), "Zero-C (AlphaZero)");
-                } else {
-                    snprintf(lbl, sizeof(lbl), "L%d %s", lp->level,
-                        engine_get_preset(lp->level)->name);
-                }
+                char lbl[40];
+                snprintf(lbl, sizeof(lbl), "%s", gauntlet_level_name(lp->level));
                 if (lp->is_relative) {
                     printf("  %-20s %-15s %2d-%2d-%-4d  %5.1f%%   %+d (rel)\n", lbl,
                         lp->opponent_label, lp->wins, lp->draws, lp->losses, score * 100.0,

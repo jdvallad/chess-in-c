@@ -8,6 +8,8 @@
 #include "core/notation.h"
 #include "core/primitives.h"
 #include "engine/engine.h"
+#include "engine/nnue.h"
+#include "engine/syzygy.h"
 #include "features/uci_client.h"
 
 #include <math.h>
@@ -15,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -52,8 +55,51 @@ static const char *g_openings[] = {
     "rnbqkb1r/ppp1pppp/5n2/3p4/3P4/5NP1/PPP1PP1P/RNBQKB1R b KQkq - 0 3",
 };
 
-// Default Stockfish Elo anchors for L1..L6 (Titan-C) and L7 (Zero-C)
-static const int g_sf_anchors[GAUNTLET_NUM_LEVELS] = { 1350, 1450, 1650, 1950, 2250, 2500, 1320 };
+// Canonical bot slots (0..14) -> stable preset level IDs & default Stockfish Elo anchors
+static const int g_slot_levels[GAUNTLET_NUM_LEVELS] = {
+    1, 2, 3, 4, 5, 6,
+    GAUNTLET_ZERO_C_LEVEL,
+    GAUNTLET_ZERO_C_V1_LEVEL,
+    GAUNTLET_TOY_LEVEL,
+    GAUNTLET_HYBRID_DUAL_LEVEL,
+    GAUNTLET_HYBRID_LMR_LEVEL,
+    GAUNTLET_HYBRID_OMEGA_LEVEL,
+    GAUNTLET_HYBRID_NNUE_LEVEL,
+    GAUNTLET_APEX_PURE_LEVEL,
+    GAUNTLET_APEX_SYZYGY_LEVEL,
+};
+
+static const int g_sf_anchors[GAUNTLET_NUM_LEVELS] = {
+    1350, 1450, 1650, 1950, 2250, 2500, // L1..L6 Titan-C
+    1400, // L7  Zero-C v2
+    1350, // L13 Zero-C v1
+    1350, // L20 Zero-C Lite (Toy)
+    2450, // L14 Gemini Arbiter
+    2450, // L15 Oracle of LMR
+    2100, // L16 Zero-C Omega
+    2350, // L17 Singularity v5
+    2400, // L18 Apex-C Pure
+    2450, // L19 Apex-C + Syzygy
+};
+
+int gauntlet_slot_to_level(int slot) {
+    if (slot < 0 || slot >= GAUNTLET_NUM_LEVELS) {
+        return 1;
+    }
+    return g_slot_levels[slot];
+}
+
+int gauntlet_level_to_slot(int level) {
+    if (level == 12) {
+        level = GAUNTLET_ZERO_C_LEVEL;
+    }
+    for (int i = 0; i < GAUNTLET_NUM_LEVELS; i++) {
+        if (g_slot_levels[i] == level) {
+            return i;
+        }
+    }
+    return -1;
+}
 
 typedef struct calc_game_rec {
     int anchor_elo;
@@ -69,6 +115,8 @@ struct gauntlet {
     char elo_file[256];
     bool sf_available;
     bool az_available;
+    int sf_min_elo;
+    int sf_max_elo;
     char sf_name[96];
 
     // Active run configuration
@@ -129,9 +177,103 @@ static bool detect_zero_c_available(void) {
            && (access("build/libaz_mcts.so", R_OK) == 0);
 }
 
+static bool is_gauntlet_az_level(int level) {
+    return level == GAUNTLET_ZERO_C_LEVEL || level == 12 || level == GAUNTLET_ZERO_C_V1_LEVEL
+           || level == GAUNTLET_TOY_LEVEL;
+}
+
+static bool is_gauntlet_hybrid_gpu_level(int level) {
+    return level == GAUNTLET_HYBRID_DUAL_LEVEL || level == GAUNTLET_HYBRID_LMR_LEVEL
+           || level == GAUNTLET_HYBRID_OMEGA_LEVEL;
+}
+
+static bool is_gauntlet_apex_level(int level) {
+    return level == GAUNTLET_APEX_PURE_LEVEL || level == GAUNTLET_APEX_SYZYGY_LEVEL;
+}
+
+static bool detect_apex_available(void) {
+    return access("build/chess_uci", X_OK) == 0;
+}
+
+bool gauntlet_level_available(const gauntlet *g, int level) {
+    if (level >= 1 && level <= 6) {
+        return true;
+    }
+    if (level == GAUNTLET_ZERO_C_LEVEL || level == 12) {
+        return detect_zero_c_available() && access("data/az/latest.pt", R_OK) == 0
+               && access("data/az/replay.npz", R_OK) == 0;
+    }
+    if (level == GAUNTLET_ZERO_C_V1_LEVEL) {
+        return detect_zero_c_available() && access("data/az_v1_gen4320/latest.pt", R_OK) == 0;
+    }
+    if (level == GAUNTLET_TOY_LEVEL) {
+        return detect_zero_c_available() && access("data/az_toy/latest.pt", R_OK) == 0
+               && access("data/az_toy/replay.npz", R_OK) == 0;
+    }
+    if (level == GAUNTLET_HYBRID_NNUE_LEVEL) {
+        return access("data/chess_net_zero_v4.nnue", R_OK) == 0 && detect_apex_available();
+    }
+    // Hybrids #14..16 and Apex-C #18..19 unlock once Zero-C v2 + Singularity v5 are finished AND Apex Forge has begun
+    bool forge_prereq = (access("data/az/v2_complete.flag", R_OK) == 0)
+                        && (access("data/chess_net_zero_v4.nnue", R_OK) == 0);
+    struct stat st_dg;
+    bool has_dg = (stat("data/datagen_v4.bin", &st_dg) == 0 && st_dg.st_size >= 3600);
+    bool forge_begun = forge_prereq && (has_dg || access("data/titan_v6_1024.nnue", R_OK) == 0 || syzygy_installed_pieces() >= 3);
+    if (is_gauntlet_hybrid_gpu_level(level)) {
+        return forge_begun && access("data/az/latest.pt", R_OK) == 0
+               && access("src/az/hybrid_uci_run.sh", X_OK) == 0 && detect_zero_c_available()
+               && detect_apex_available();
+    }
+    if (level == GAUNTLET_APEX_PURE_LEVEL) {
+        return detect_apex_available() && forge_begun && (has_dg || access("data/titan_v6_1024.nnue", R_OK) == 0);
+    }
+    if (level == GAUNTLET_APEX_SYZYGY_LEVEL) {
+        return detect_apex_available() && forge_begun && (has_dg || access("data/titan_v6_1024.nnue", R_OK) == 0)
+               && g && g->sf_path[0] != '\0' && syzygy_installed_pieces() >= 3;
+    }
+    return false;
+}
+
+const char *gauntlet_level_engine(int level) {
+    if (is_gauntlet_az_level(level)) {
+        return "az";
+    }
+    if (is_gauntlet_hybrid_gpu_level(level) || level == GAUNTLET_HYBRID_NNUE_LEVEL) {
+        return "hybrid";
+    }
+    if (is_gauntlet_apex_level(level)) {
+        return "apex";
+    }
+    return "c";
+}
+
 const char *gauntlet_level_name(int level) {
-    if (level == GAUNTLET_ZERO_C_LEVEL) {
-        return "Zero-C (AlphaZero)";
+    if (level == GAUNTLET_ZERO_C_LEVEL || level == 12) {
+        return "Zero-C v2 (AlphaZero)";
+    }
+    if (level == GAUNTLET_ZERO_C_V1_LEVEL) {
+        return "Zero-C v1 (Gen 4320)";
+    }
+    if (level == GAUNTLET_TOY_LEVEL) {
+        return "Zero-C Lite (Toy Net)";
+    }
+    if (level == GAUNTLET_HYBRID_DUAL_LEVEL) {
+        return "Gemini Arbiter (Dual-Brain)";
+    }
+    if (level == GAUNTLET_HYBRID_LMR_LEVEL) {
+        return "Oracle of LMR (Neural Search)";
+    }
+    if (level == GAUNTLET_HYBRID_OMEGA_LEVEL) {
+        return "Zero-C Omega (Tactical MCTS)";
+    }
+    if (level == GAUNTLET_HYBRID_NNUE_LEVEL) {
+        return "Singularity v5 (Zero-NNUE)";
+    }
+    if (level == GAUNTLET_APEX_PURE_LEVEL) {
+        return "Apex-C (Pure)";
+    }
+    if (level == GAUNTLET_APEX_SYZYGY_LEVEL) {
+        return "Apex-C + Syzygy";
     }
     return engine_get_preset(level)->name;
 }
@@ -187,8 +329,8 @@ static void compute_mle_elo_ci(const calc_game_rec *games, int n, int prior_mean
         r += step;
         if (r < 400.0) {
             r = 400.0;
-        } else if (r > 3400.0) {
-            r = 3400.0;
+        } else if (r > 3650.0) {
+            r = 3650.0;
         }
         if (fabs(step) < 1e-4) {
             break;
@@ -291,7 +433,7 @@ bool elo_load_file(const char *path, elo_record out_levels[GAUNTLET_NUM_LEVELS],
     size_t opp_size, char *updated_out, size_t upd_size) {
     memset(out_levels, 0, GAUNTLET_NUM_LEVELS * sizeof(elo_record));
     for (int i = 0; i < GAUNTLET_NUM_LEVELS; i++) {
-        out_levels[i].level = i + 1;
+        out_levels[i].level = gauntlet_slot_to_level(i);
     }
     if (opponent_out && opp_size > 0) {
         opponent_out[0] = '\0';
@@ -338,9 +480,10 @@ bool elo_load_file(const char *path, elo_record out_levels[GAUNTLET_NUM_LEVELS],
         obj[olen] = '\0';
 
         int lvl = extract_json_int(obj, "level", 0);
-        if (lvl >= 1 && lvl <= GAUNTLET_NUM_LEVELS) {
-            elo_record *r = &out_levels[lvl - 1];
-            r->level = lvl;
+        int slot = gauntlet_level_to_slot(lvl);
+        if (slot >= 0 && slot < GAUNTLET_NUM_LEVELS) {
+            elo_record *r = &out_levels[slot];
+            r->level = gauntlet_slot_to_level(slot);
             r->est_elo = extract_json_int(obj, "est_elo", 0);
             r->anchor_elo = extract_json_int(obj, "anchor_elo", 0);
             r->wins = extract_json_int(obj, "wins", 0);
@@ -380,12 +523,13 @@ bool elo_save_file(const char *path, const elo_record levels[GAUNTLET_NUM_LEVELS
     fprintf(fp, "  \"levels\": [\n");
     for (int i = 0; i < GAUNTLET_NUM_LEVELS; i++) {
         const elo_record *r = &levels[i];
-        const char *name = gauntlet_level_name(i + 1);
+        int lvl = gauntlet_slot_to_level(i);
+        const char *name = gauntlet_level_name(lvl);
         fprintf(fp,
             "    {\"level\": %d, \"name\": \"%s\", \"has_elo\": %s, \"is_relative\": %s, "
             "\"est_elo\": %d, \"anchor_elo\": %d, \"wins\": %d, \"draws\": %d, \"losses\": %d, "
             "\"games\": %d}%s\n",
-            i + 1, name, r->has_elo ? "true" : "false", r->is_relative ? "true" : "false",
+            lvl, name, r->has_elo ? "true" : "false", r->is_relative ? "true" : "false",
             r->est_elo, r->anchor_elo, r->wins, r->draws, r->losses, r->games,
             (i + 1 < GAUNTLET_NUM_LEVELS) ? "," : "");
     }
@@ -438,15 +582,65 @@ static void *worker_main(void *arg) {
         }
     }
     uci_engine *az = NULL;
-    if (init_lvl == GAUNTLET_ZERO_C_LEVEL && g->az_available) {
+    if (is_gauntlet_az_level(init_lvl) && detect_zero_c_available()) {
         az = uci_create("src/az/az_uci_run.sh");
         if (az) {
             uci_set_option(az, "OpeningVariety", "false");
             uci_set_option(az, "TacticalHybrid", "true");
-            bool is_v1 = (az_ckpt[0] != '\0' && strstr(az_ckpt, "az_v1") != NULL);
-            uci_set_option(az, "Simulations", is_v1 ? "1000" : "600");
-            if (az_ckpt[0] != '\0') {
-                uci_set_option(az, "Checkpoint", az_ckpt);
+            const char *use_ckpt = az_ckpt;
+            if (use_ckpt[0] == '\0') {
+                if (init_lvl == GAUNTLET_ZERO_C_V1_LEVEL) {
+                    use_ckpt = "data/az_v1_gen4320/latest.pt";
+                } else if (init_lvl == GAUNTLET_TOY_LEVEL) {
+                    use_ckpt = "data/az_toy/latest.pt";
+                } else {
+                    use_ckpt = "data/az/latest.pt";
+                }
+            }
+            bool is_v1 = (strstr(use_ckpt, "az_v1") != NULL);
+            bool is_toy = (strstr(use_ckpt, "az_toy") != NULL);
+            uci_set_option(az, "Simulations", is_v1 ? "1000" : (is_toy ? "300" : "600"));
+            uci_set_option(az, "Checkpoint", use_ckpt);
+        }
+    }
+    uci_engine *hyb = NULL;
+    if (is_gauntlet_hybrid_gpu_level(init_lvl) && access("src/az/hybrid_uci_run.sh", X_OK) == 0) {
+        hyb = uci_create("src/az/hybrid_uci_run.sh");
+        if (hyb) {
+            const char *mode = (init_lvl == GAUNTLET_HYBRID_LMR_LEVEL)
+                                   ? "neural_lmr"
+                                   : ((init_lvl == GAUNTLET_HYBRID_OMEGA_LEVEL) ? "omega_mcts"
+                                                                                : "dual_brain");
+            uci_set_option(hyb, "HybridMode", mode);
+        }
+    }
+    uci_engine *apex = NULL;
+    uci_engine *apex_tb = NULL;
+    int apex_syz_pieces = 0;
+    if ((is_gauntlet_apex_level(init_lvl) || init_lvl == GAUNTLET_HYBRID_NNUE_LEVEL)
+        && detect_apex_available()) {
+        apex = uci_create("build/chess_uci");
+        if (apex) {
+            uci_set_option(apex, "Threads", "1");
+            uci_set_option(apex, "Hash", "64");
+            uci_set_option(apex, "OwnBook", "false");
+            if (init_lvl == GAUNTLET_HYBRID_NNUE_LEVEL) {
+                uci_set_option(apex, "EvalFile", "data/chess_net_zero_v4.nnue");
+            } else {
+                if (access(NNUE_V4_FILE, R_OK) == 0) {
+                    uci_set_option(apex, "EvalFile", NNUE_V4_FILE);
+                }
+                (void) uci_apply_spsa_file(apex, "data/spsa_best.json");
+            }
+        }
+        if (init_lvl == GAUNTLET_APEX_SYZYGY_LEVEL && g->sf_path[0] && syzygy_installed_pieces() >= 3) {
+            apex_tb = uci_create(g->sf_path);
+            if (apex_tb) {
+                uci_set_option(apex_tb, "Threads", "1");
+                uci_set_option(apex_tb, "Hash", "16");
+                uci_set_option(apex_tb, "SyzygyPath", SYZYGY_DEFAULT_DIR);
+                uci_set_option(apex_tb, "SyzygyProbeDepth", "1");
+                apex_syz_pieces = syzygy_installed_pieces();
             }
         }
     }
@@ -470,23 +664,26 @@ static void *worker_main(void *arg) {
         int total_games = is_calc ? g->cfg_calc_max_games : g->cfg_games;
         pthread_mutex_unlock(&g->mu);
 
-        if (lvl == GAUNTLET_ZERO_C_LEVEL && !az) {
+        if ((is_gauntlet_az_level(lvl) && !az) || (is_gauntlet_hybrid_gpu_level(lvl) && !hyb)
+            || ((is_gauntlet_apex_level(lvl) || lvl == GAUNTLET_HYBRID_NNUE_LEVEL) && !apex)) {
             break;
         }
 
         const char *fen = g_openings[(gidx / 2) % n_open];
         bool subject_is_white = ((gidx % 2) == 0);
         char subj_name[48];
-        if (lvl == GAUNTLET_ZERO_C_LEVEL) {
-            snprintf(subj_name, sizeof(subj_name), "Zero-C (AZ)");
-        } else if (lvl == 0 && celo >= 800) {
+        if (lvl == 0 && celo >= 800) {
             snprintf(subj_name, sizeof(subj_name), "Titan-C ~%d", celo);
         } else {
-            snprintf(subj_name, sizeof(subj_name), "Titan-C L%d", lvl);
+            snprintf(subj_name, sizeof(subj_name), "%s", gauntlet_level_name(lvl));
         }
         char opp_label[48];
         if (vs_sf) {
-            snprintf(opp_label, sizeof(opp_label), "SF %d", anchor);
+            if (anchor > g->sf_max_elo) {
+                snprintf(opp_label, sizeof(opp_label), "SF Max");
+            } else {
+                snprintf(opp_label, sizeof(opp_label), "SF %d", anchor);
+            }
         } else {
             snprintf(opp_label, sizeof(opp_label), "Titan-C L%d", anchor);
         }
@@ -500,6 +697,15 @@ static void *worker_main(void *arg) {
         }
         if (az) {
             uci_new_game(az);
+        }
+        if (hyb) {
+            uci_new_game(hyb);
+        }
+        if (apex) {
+            uci_new_game(apex);
+        }
+        if (apex_tb) {
+            uci_new_game(apex_tb);
         }
 
         pthread_mutex_lock(&g->mu);
@@ -542,8 +748,19 @@ static void *worker_main(void *arg) {
             u64 m = NULL_MOVE;
             int eval_w = 0;
             if (subj_turn) {
-                if (lvl == GAUNTLET_ZERO_C_LEVEL && az) {
+                if (is_gauntlet_az_level(lvl) && az) {
                     uci_search_result ur = uci_search(az, game, false, 0, 750);
+                    m = ur.base.best_move;
+                    eval_w = engine_score_to_white(game->game, ur.base.score_cp);
+                } else if (is_gauntlet_hybrid_gpu_level(lvl) && hyb) {
+                    uci_search_result ur = uci_search(hyb, game, false, 0, 900);
+                    m = ur.base.best_move;
+                    eval_w = engine_score_to_white(game->game, ur.base.score_cp);
+                } else if ((is_gauntlet_apex_level(lvl) || lvl == GAUNTLET_HYBRID_NNUE_LEVEL) && apex) {
+                    int pc_cnt = (apex_tb && apex_syz_pieces >= 3) ? syzygy_piece_count(game->game) : 99;
+                    uci_search_result ur = (apex_tb && pc_cnt <= apex_syz_pieces)
+                                               ? uci_search_depth(apex_tb, game, 6, 150)
+                                               : uci_search(apex, game, false, 0, sf_ms);
                     m = ur.base.best_move;
                     eval_w = engine_score_to_white(game->game, ur.base.score_cp);
                 } else if (lvl == 0 && celo >= 800) {
@@ -556,7 +773,7 @@ static void *worker_main(void *arg) {
                     eval_w = engine_score_to_white(game->game, sr.score_cp);
                 }
             } else if (vs_sf && sf) {
-                bool lim = (anchor < 3200);
+                bool lim = (anchor <= g->sf_max_elo);
                 uci_search_result ur = uci_search(sf, game, lim, anchor, sf_ms);
                 m = ur.base.best_move;
                 eval_w = engine_score_to_white(game->game, ur.base.score_cp);
@@ -593,7 +810,8 @@ static void *worker_main(void *arg) {
 
             // Two-sided resign & draw adjudication (disabled early for Zero-C so endgame skill is truly tested!)
             last_eval_w_by_side[black_turn ? 1 : 0] = eval_w;
-            int resign_thresh = (lvl == GAUNTLET_ZERO_C_LEVEL) ? 900 : 650;
+            int resign_thresh
+                = (is_gauntlet_az_level(lvl) || is_gauntlet_hybrid_gpu_level(lvl)) ? 900 : 650;
             if (eval_w >= resign_thresh) {
                 win_w_streak++;
                 win_b_streak = 0;
@@ -666,47 +884,74 @@ static void *worker_main(void *arg) {
                     g->calc_game_count++;
                 }
                 record_calc_bucket(cs, anchor, subj_res);
-                int prior = (lvl >= 1 && lvl <= GAUNTLET_NUM_LEVELS) ? g_sf_anchors[lvl - 1]
-                                                                     : (celo >= 800 ? celo : 1600);
+                int pslot = gauntlet_level_to_slot(lvl);
+                int prior = (pslot >= 0) ? g_sf_anchors[pslot] : (celo >= 800 ? celo : 1600);
+                if (is_gauntlet_apex_level(lvl)) {
+                    prior = (access(NNUE_V4_FILE, R_OK) == 0) ? 2600 : 2450;
+                }
                 compute_mle_elo_ci(g->calc_games, g->calc_game_count, prior, &cs->est_elo,
                     &cs->ci_half, &cs->ci_low, &cs->ci_high);
-                cs->hit_sf_floor = (cs->est_elo < 1320);
+                cs->hit_sf_floor = (cs->est_elo < g->sf_min_elo);
                 if (cs->games_done >= 12 && cs->ci_half <= cs->target_ci) {
                     cs->converged = true;
                 }
-            } else if (lvl >= 1 && lvl <= GAUNTLET_NUM_LEVELS) {
-                level_progress *lp = &g->status.levels[lvl - 1];
-                lp->done_games++;
-                if (subj_res > 0.75) {
-                    lp->wins++;
-                } else if (subj_res < 0.25) {
-                    lp->losses++;
-                } else {
-                    lp->draws++;
+            } else {
+                int slot = gauntlet_level_to_slot(lvl);
+                if (slot >= 0) {
+                    level_progress *lp = &g->status.levels[slot];
+                    lp->done_games++;
+                    if (subj_res > 0.75) {
+                        lp->wins++;
+                    } else if (subj_res < 0.25) {
+                        lp->losses++;
+                    } else {
+                        lp->draws++;
+                    }
+                    double score
+                        = ((double) lp->wins + 0.5 * (double) lp->draws) / (double) lp->done_games;
+                    double diff = score_to_elo_diff(score);
+                    if (vs_sf) {
+                        lp->est_elo = (int) lround((double) anchor + diff);
+                        lp->is_relative = false;
+                    } else {
+                        int base_elo = (slot > 0 && g->status.levels[slot - 1].has_elo)
+                                           ? g->status.levels[slot - 1].est_elo
+                                           : 0;
+                        lp->est_elo = base_elo + (int) lround(diff);
+                        lp->is_relative = true;
+                    }
+                    lp->has_elo = true;
                 }
-                double score
-                    = ((double) lp->wins + 0.5 * (double) lp->draws) / (double) lp->done_games;
-                double diff = score_to_elo_diff(score);
-                if (vs_sf) {
-                    lp->est_elo = (int) lround((double) anchor + diff);
-                    lp->is_relative = false;
-                } else {
-                    int base_elo = (lvl > 1 && g->status.levels[lvl - 2].has_elo)
-                                       ? g->status.levels[lvl - 2].est_elo
-                                       : 0;
-                    lp->est_elo = base_elo + (int) lround(diff);
-                    lp->is_relative = true;
-                }
-                lp->has_elo = true;
             }
             pthread_mutex_unlock(&g->mu);
         }
     }
 
+    uci_delete(&apex_tb);
+    uci_delete(&apex);
+    uci_delete(&hyb);
     uci_delete(&az);
     uci_delete(&sf);
     engine_delete(&c_eng);
     return NULL;
+}
+
+static int clamp_calc_anchor(const gauntlet *g, int target_elo) {
+    int sf_min = (g->sf_min_elo > 0) ? g->sf_min_elo : 1350;
+    int sf_max = (g->sf_max_elo >= sf_min) ? g->sf_max_elo : 2850;
+    // Never send an unsupported UCI_Elo above sf_max (Stockfish 14.1 rejects >2850 back to 1350!):
+    // if estimated Elo exceeds sf_max + 75, step up to unthrottled Stockfish Max (anchor 3500).
+    if (target_elo > sf_max + 75) {
+        return 3500;
+    }
+    int a = ((target_elo + 12) / 25) * 25;
+    if (a < sf_min) {
+        a = sf_min;
+    }
+    if (a > sf_max) {
+        a = sf_max;
+    }
+    return a;
 }
 
 static void *coordinator_calc_main(void *arg) {
@@ -716,25 +961,20 @@ static void *coordinator_calc_main(void *arg) {
     int max_g = g->cfg_calc_max_games;
     int target_ci = g->cfg_calc_target_ci;
 
-    // Initial Stockfish anchor guess (from saved rating if available, else preset anchor)
+    // Initial Stockfish anchor guess (strictly within Stockfish's true UCI_Elo range!)
     int cur_anchor = 1650;
-    if (lvl >= 1 && lvl <= GAUNTLET_NUM_LEVELS) {
-        if (g->saved_elos[lvl - 1].has_elo && !g->saved_elos[lvl - 1].is_relative
-            && g->saved_elos[lvl - 1].est_elo >= 1320) {
-            cur_anchor = g->saved_elos[lvl - 1].est_elo;
+    int init_slot = gauntlet_level_to_slot(lvl);
+    if (init_slot >= 0) {
+        if (g->saved_elos[init_slot].has_elo && !g->saved_elos[init_slot].is_relative
+            && g->saved_elos[init_slot].est_elo >= g->sf_min_elo) {
+            cur_anchor = g->saved_elos[init_slot].est_elo;
         } else {
-            cur_anchor = g_sf_anchors[lvl - 1];
+            cur_anchor = g_sf_anchors[init_slot];
         }
     } else if (celo >= 800) {
         cur_anchor = celo;
     }
-    if (cur_anchor < 1320) {
-        cur_anchor = 1320;
-    }
-    if (cur_anchor > 3190) {
-        cur_anchor = 3190;
-    }
-    cur_anchor = ((cur_anchor + 12) / 25) * 25;
+    cur_anchor = clamp_calc_anchor(g, cur_anchor);
 
     int done = 0;
     while (done < max_g) {
@@ -751,8 +991,8 @@ static void *coordinator_calc_main(void *arg) {
             batch = max_g - done;
         }
         int nthreads = g->cfg_threads;
-        if (lvl == GAUNTLET_ZERO_C_LEVEL && nthreads > 2) {
-            nthreads = 2; // Cap GPU worker processes for Zero-C to 2
+        if ((is_gauntlet_az_level(lvl) || is_gauntlet_hybrid_gpu_level(lvl)) && nthreads > 2) {
+            nthreads = 2; // Cap GPU worker processes to 2
         }
         if (nthreads > batch) {
             nthreads = batch;
@@ -786,25 +1026,44 @@ static void *coordinator_calc_main(void *arg) {
 
         done += batch;
 
-        // Adapt Stockfish anchor right onto our latest MLE Elo estimate!
+        // Adapt Stockfish anchor right onto our latest MLE Elo estimate & persist live batch progress!
         pthread_mutex_lock(&g->mu);
-        int next_a = ((g->status.calc.est_elo + 12) / 25) * 25;
-        if (next_a < 1320) {
-            next_a = 1320;
+        cur_anchor = clamp_calc_anchor(g, g->status.calc.est_elo);
+        int batch_slot = gauntlet_level_to_slot(lvl);
+        if (g->status.calc.games_done > 0 && batch_slot >= 0) {
+            elo_calc_status *bcs = &g->status.calc;
+            elo_record *brec = &g->saved_elos[batch_slot];
+            brec->level = gauntlet_slot_to_level(batch_slot);
+            brec->est_elo = bcs->est_elo;
+            brec->anchor_elo = bcs->current_anchor;
+            brec->wins = bcs->wins;
+            brec->draws = bcs->draws;
+            brec->losses = bcs->losses;
+            brec->games = bcs->games_done;
+            brec->has_elo = true;
+            brec->is_relative = false;
+            level_progress *blp = &g->status.levels[batch_slot];
+            blp->done_games = bcs->games_done;
+            blp->total_games = bcs->max_games;
+            blp->wins = bcs->wins;
+            blp->draws = bcs->draws;
+            blp->losses = bcs->losses;
+            blp->anchor_elo = bcs->current_anchor;
+            blp->est_elo = bcs->est_elo;
+            blp->has_elo = true;
+            blp->is_relative = false;
+            elo_save_file(g->elo_file, g->saved_elos, g->status.opponent_name, true);
         }
-        if (next_a > 3190) {
-            next_a = 3190;
-        }
-        cur_anchor = next_a;
         pthread_mutex_unlock(&g->mu);
     }
 
-    // Save pinned Elo back into elo_ratings.json when calibrating a named preset or Zero-C
+    // Save pinned Elo back into elo_ratings.json for any calibrated bot
     pthread_mutex_lock(&g->mu);
-    if (g->status.calc.games_done > 0 && lvl >= 1 && lvl <= GAUNTLET_NUM_LEVELS) {
+    int save_slot = gauntlet_level_to_slot(lvl);
+    if (g->status.calc.games_done > 0 && save_slot >= 0) {
         elo_calc_status *cs = &g->status.calc;
-        elo_record *rec = &g->saved_elos[lvl - 1];
-        rec->level = lvl;
+        elo_record *rec = &g->saved_elos[save_slot];
+        rec->level = gauntlet_slot_to_level(save_slot);
         rec->est_elo = cs->est_elo;
         rec->anchor_elo = cs->current_anchor;
         rec->wins = cs->wins;
@@ -814,7 +1073,7 @@ static void *coordinator_calc_main(void *arg) {
         rec->has_elo = true;
         rec->is_relative = false;
 
-        level_progress *lp = &g->status.levels[lvl - 1];
+        level_progress *lp = &g->status.levels[save_slot];
         lp->state = 2;
         lp->done_games = cs->games_done;
         lp->total_games = cs->games_done;
@@ -850,16 +1109,16 @@ static void *coordinator_main(void *arg) {
     gauntlet *g = (gauntlet *) arg;
 
     bool vs_sf = g->cfg_use_sf && g->sf_available;
-    int max_all = g->az_available ? GAUNTLET_NUM_LEVELS : 6;
-    int start_l = (g->cfg_only_level >= 1 && g->cfg_only_level <= GAUNTLET_NUM_LEVELS)
-                      ? g->cfg_only_level
-                      : (vs_sf ? 1 : 2);
-    int end_l = (g->cfg_only_level >= 1 && g->cfg_only_level <= GAUNTLET_NUM_LEVELS)
-                    ? g->cfg_only_level
-                    : max_all;
+    int only_slot = (g->cfg_only_level > 0) ? gauntlet_level_to_slot(g->cfg_only_level) : -1;
+    int start_s = (only_slot >= 0) ? only_slot : (vs_sf ? 0 : 1);
+    int end_s = (only_slot >= 0) ? only_slot : (GAUNTLET_NUM_LEVELS - 1);
 
-    for (int lvl = start_l; lvl <= end_l; lvl++) {
-        if (lvl == GAUNTLET_ZERO_C_LEVEL && !g->az_available) {
+    for (int slot = start_s; slot <= end_s; slot++) {
+        int lvl = gauntlet_slot_to_level(slot);
+        if (!gauntlet_level_available(g, lvl)) {
+            pthread_mutex_lock(&g->mu);
+            g->status.levels[slot].state = 3; // locked / unavailable
+            pthread_mutex_unlock(&g->mu);
             continue;
         }
         pthread_mutex_lock(&g->mu);
@@ -870,13 +1129,16 @@ static void *coordinator_main(void *arg) {
         g->active_level = lvl;
         g->active_custom_elo = 0;
         g->active_vs_sf = vs_sf;
-        g->active_anchor = vs_sf ? g_sf_anchors[lvl - 1]
-                                 : ((lvl == GAUNTLET_ZERO_C_LEVEL) ? 3 : ((lvl > 1) ? (lvl - 1) : 1));
+        g->active_anchor = vs_sf ? g_sf_anchors[slot]
+                                 : ((lvl >= 1 && lvl <= 6) ? ((lvl > 1) ? (lvl - 1) : 1) : 6);
+        if (vs_sf && g->active_anchor > g->sf_max_elo) {
+            g->active_anchor = g->sf_max_elo;
+        }
         g->batch_game_start = 0;
         g->batch_game_end = g->cfg_games;
         g->next_game_idx = 0;
 
-        level_progress *lp = &g->status.levels[lvl - 1];
+        level_progress *lp = &g->status.levels[slot];
         lp->state = 1; // running
         lp->done_games = 0;
         lp->total_games = g->cfg_games;
@@ -886,8 +1148,8 @@ static void *coordinator_main(void *arg) {
         lp->anchor_elo = g->active_anchor;
         lp->is_relative = !vs_sf;
         int nthreads = g->cfg_threads;
-        if (lvl == GAUNTLET_ZERO_C_LEVEL && nthreads > 2) {
-            nthreads = 2; // Keep GPU VRAM low & smooth for Zero-C
+        if ((is_gauntlet_az_level(lvl) || is_gauntlet_hybrid_gpu_level(lvl)) && nthreads > 2) {
+            nthreads = 2;
         }
         if (nthreads > g->cfg_games) {
             nthreads = g->cfg_games;
@@ -909,7 +1171,7 @@ static void *coordinator_main(void *arg) {
         pthread_mutex_lock(&g->mu);
         lp->state = g->stop_requested ? 3 : 2;
         if (lp->done_games > 0) {
-            elo_record *rec = &g->saved_elos[lvl - 1];
+            elo_record *rec = &g->saved_elos[slot];
             rec->level = lvl;
             rec->est_elo = lp->est_elo;
             rec->anchor_elo = lp->anchor_elo;
@@ -962,10 +1224,14 @@ gauntlet *gauntlet_create(const char *sf_path, const char *elo_file_path) {
     snprintf(g->elo_file, sizeof(g->elo_file), "%s",
         (elo_file_path && elo_file_path[0]) ? elo_file_path : ELO_RATINGS_FILE);
 
+    g->sf_min_elo = 1350;
+    g->sf_max_elo = 2850;
     if (uci_find_stockfish(sf_path, g->sf_path, sizeof(g->sf_path))) {
         uci_engine *probe = uci_create(g->sf_path);
         if (probe) {
             g->sf_available = true;
+            g->sf_min_elo = uci_get_min_elo(probe);
+            g->sf_max_elo = uci_get_max_elo(probe);
             snprintf(g->sf_name, sizeof(g->sf_name), "%s", uci_get_name(probe));
             uci_delete(&probe);
         }
@@ -984,8 +1250,9 @@ gauntlet *gauntlet_create(const char *sf_path, const char *elo_file_path) {
     snprintf(g->status.updated_at, sizeof(g->status.updated_at), "%s", saved_upd);
 
     for (int i = 0; i < GAUNTLET_NUM_LEVELS; i++) {
+        int lvl = gauntlet_slot_to_level(i);
         level_progress *lp = &g->status.levels[i];
-        lp->level = i + 1;
+        lp->level = lvl;
         lp->state = g->saved_elos[i].has_elo ? 2 : 0;
         lp->done_games = g->saved_elos[i].games;
         lp->total_games = g->saved_elos[i].games;
@@ -997,9 +1264,9 @@ gauntlet *gauntlet_create(const char *sf_path, const char *elo_file_path) {
         lp->has_elo = g->saved_elos[i].has_elo;
         lp->is_relative = g->saved_elos[i].is_relative;
         if (lp->is_relative && i > 0) {
-            int opp = (i + 1 == GAUNTLET_ZERO_C_LEVEL) ? 3 : i;
-            snprintf(lp->opponent_label, sizeof(lp->opponent_label), "vs L%d %s", opp,
-                engine_get_preset(opp)->name);
+            int opp = (lvl >= 1 && lvl <= 6) ? (lvl - 1) : 6;
+            snprintf(lp->opponent_label, sizeof(lp->opponent_label), "vs %s",
+                gauntlet_level_name(opp));
         } else if (!lp->is_relative && lp->anchor_elo > 0) {
             snprintf(lp->opponent_label, sizeof(lp->opponent_label), "vs SF %d", lp->anchor_elo);
         } else if (i == 0 && lp->is_relative) {
@@ -1041,7 +1308,8 @@ bool gauntlet_start(gauntlet *g, int games_per_level, int num_threads, int only_
 
     g->az_available = detect_zero_c_available();
     g->status.az_available = g->az_available;
-    if (only_level == GAUNTLET_ZERO_C_LEVEL && !g->az_available) {
+    int only_slot = (only_level > 0) ? gauntlet_level_to_slot(only_level) : -1;
+    if (only_level > 0 && (only_slot < 0 || !gauntlet_level_available(g, only_level))) {
         pthread_mutex_unlock(&g->mu);
         return false;
     }
@@ -1062,7 +1330,7 @@ bool gauntlet_start(gauntlet *g, int games_per_level, int num_threads, int only_
     g->cfg_calc_az_ckpt[0] = '\0';
     g->cfg_games = games_per_level;
     g->cfg_threads = num_threads;
-    g->cfg_only_level = only_level;
+    g->cfg_only_level = (only_slot >= 0) ? gauntlet_slot_to_level(only_slot) : 0;
     g->cfg_use_sf = vs_sf;
     g->cfg_sf_ms = (sf_time_ms > 20) ? sf_time_ms : 500;
 
@@ -1083,16 +1351,15 @@ bool gauntlet_start(gauntlet *g, int games_per_level, int num_threads, int only_
     snprintf(g->status.opponent_name, sizeof(g->status.opponent_name), "%s",
         vs_sf ? g->sf_name : "Internal Ladder");
 
-    int max_all = g->az_available ? GAUNTLET_NUM_LEVELS : 6;
-    int start_l = (only_level >= 1 && only_level <= GAUNTLET_NUM_LEVELS) ? only_level
-                                                                         : (vs_sf ? 1 : 2);
-    int end_l = (only_level >= 1 && only_level <= GAUNTLET_NUM_LEVELS) ? only_level : max_all;
-    g->status.scheduled_games_total = (end_l - start_l + 1) * games_per_level;
+    int start_s = (only_slot >= 0) ? only_slot : (vs_sf ? 0 : 1);
+    int end_s = (only_slot >= 0) ? only_slot : (GAUNTLET_NUM_LEVELS - 1);
+    int scheduled = 0;
 
     for (int i = 0; i < GAUNTLET_NUM_LEVELS; i++) {
-        int lvl = i + 1;
+        int lvl = gauntlet_slot_to_level(i);
         level_progress *lp = &g->status.levels[i];
-        if (lvl >= start_l && lvl <= end_l) {
+        lp->level = lvl;
+        if (i >= start_s && i <= end_s && gauntlet_level_available(g, lvl)) {
             lp->state = 0;
             lp->done_games = 0;
             lp->total_games = games_per_level;
@@ -1100,23 +1367,30 @@ bool gauntlet_start(gauntlet *g, int games_per_level, int num_threads, int only_
             lp->draws = 0;
             lp->losses = 0;
             lp->anchor_elo = vs_sf ? g_sf_anchors[i]
-                                   : ((lvl == GAUNTLET_ZERO_C_LEVEL) ? 3 : ((lvl > 1) ? (lvl - 1) : 1));
+                                   : ((lvl >= 1 && lvl <= 6) ? ((lvl > 1) ? (lvl - 1) : 1) : 6);
+            if (vs_sf && lp->anchor_elo > g->sf_max_elo) {
+                lp->anchor_elo = g->sf_max_elo;
+            }
             lp->is_relative = !vs_sf;
             if (vs_sf) {
                 snprintf(
                     lp->opponent_label, sizeof(lp->opponent_label), "vs SF %d", lp->anchor_elo);
             } else {
-                snprintf(lp->opponent_label, sizeof(lp->opponent_label), "vs L%d %s",
-                    lp->anchor_elo, engine_get_preset(lp->anchor_elo)->name);
+                snprintf(lp->opponent_label, sizeof(lp->opponent_label), "vs %s",
+                    gauntlet_level_name(lp->anchor_elo));
             }
-        } else if (!vs_sf && lvl == 1) {
+            scheduled += games_per_level;
+        } else if (!vs_sf && i == 0) {
             lp->state = 2;
             lp->est_elo = 0;
             lp->has_elo = true;
             lp->is_relative = true;
             snprintf(lp->opponent_label, sizeof(lp->opponent_label), "Baseline");
+        } else if (i >= start_s && i <= end_s) {
+            lp->state = 3; // skipped (needs compute / unlock)
         }
     }
+    g->status.scheduled_games_total = scheduled;
     for (int t = 0; t < MAX_GAUNTLET_THREADS; t++) {
         g->status.workers[t].active = false;
     }
@@ -1150,11 +1424,14 @@ bool gauntlet_start_calculator(gauntlet *g, int subject_level, int custom_elo,
 
     g->az_available = detect_zero_c_available();
     g->status.az_available = g->az_available;
-    if (subject_level == GAUNTLET_ZERO_C_LEVEL && !g->az_available) {
+    if (subject_level == 12) {
+        subject_level = GAUNTLET_ZERO_C_LEVEL;
+    }
+    if (subject_level != 0 && !gauntlet_level_available(g, subject_level)) {
         pthread_mutex_unlock(&g->mu);
         return false;
     }
-    if (subject_level < 0 || subject_level > GAUNTLET_NUM_LEVELS) {
+    if (subject_level != 0 && gauntlet_level_to_slot(subject_level) < 0) {
         subject_level = 6;
     }
     if (max_games < 8) {
@@ -1178,6 +1455,9 @@ bool gauntlet_start_calculator(gauntlet *g, int subject_level, int custom_elo,
         num_threads = MAX_GAUNTLET_THREADS;
     }
 
+    if (custom_elo > 2600) {
+        custom_elo = 2600;
+    }
     g->cfg_calc_mode = true;
     g->cfg_calc_level = subject_level;
     g->cfg_calc_custom_elo = (subject_level == 0 && custom_elo >= 800) ? custom_elo : 0;
@@ -1199,8 +1479,8 @@ bool gauntlet_start_calculator(gauntlet *g, int subject_level, int custom_elo,
     g->status.calc_mode = true;
     g->status.vs_stockfish = true;
     g->status.stop_requested = false;
-    g->status.num_threads
-        = (subject_level == GAUNTLET_ZERO_C_LEVEL && num_threads > 2) ? 2 : num_threads;
+    bool cap_gpu = is_gauntlet_az_level(subject_level) || is_gauntlet_hybrid_gpu_level(subject_level);
+    g->status.num_threads = (cap_gpu && num_threads > 2) ? 2 : num_threads;
     g->status.games_per_level = max_games;
     g->status.completed_games_total = 0;
     g->status.scheduled_games_total = max_games;
@@ -1212,19 +1492,29 @@ bool gauntlet_start_calculator(gauntlet *g, int subject_level, int custom_elo,
     cs->active = true;
     cs->subject_level = subject_level;
     cs->subject_custom_elo = g->cfg_calc_custom_elo;
+    cs->sf_min_elo = g->sf_min_elo;
+    cs->sf_max_elo = g->sf_max_elo;
     snprintf(cs->az_checkpoint, sizeof(cs->az_checkpoint), "%s", g->cfg_calc_az_ckpt);
-    if (subject_level == GAUNTLET_ZERO_C_LEVEL) {
-        if (g->cfg_calc_az_ckpt[0] != '\0' && strstr(g->cfg_calc_az_ckpt, "az_v1") != NULL) {
-            snprintf(cs->subject_label, sizeof(cs->subject_label), "Zero-C v1 Champion (Gen 4320 • Max)");
-        } else {
-            snprintf(cs->subject_label, sizeof(cs->subject_label), "Zero-C v2 (AlphaZero)");
-        }
+    if (subject_level == GAUNTLET_ZERO_C_LEVEL && g->cfg_calc_az_ckpt[0] != '\0'
+        && strstr(g->cfg_calc_az_ckpt, "az_v1") != NULL) {
+        snprintf(cs->subject_label, sizeof(cs->subject_label), "Zero-C v1 Champion (Gen 4320 • Max)");
+    } else if (subject_level == GAUNTLET_ZERO_C_LEVEL && g->cfg_calc_az_ckpt[0] != '\0'
+               && strstr(g->cfg_calc_az_ckpt, "az_toy") != NULL) {
+        snprintf(cs->subject_label, sizeof(cs->subject_label), "Zero-C Lite (Toy Net)");
+    } else if (subject_level == GAUNTLET_APEX_PURE_LEVEL) {
+        snprintf(cs->subject_label, sizeof(cs->subject_label),
+            (access(NNUE_V4_FILE, R_OK) == 0) ? "Apex-C 3000 (Pure • 1024 NNUE)"
+                                              : "Apex-C (Pure Prototype)");
+    } else if (subject_level == GAUNTLET_APEX_SYZYGY_LEVEL) {
+        snprintf(cs->subject_label, sizeof(cs->subject_label),
+            (access(NNUE_V4_FILE, R_OK) == 0) ? "Apex-C 3000 + Syzygy (5-Man TB)"
+                                              : "Apex-C + Syzygy (Prototype)");
     } else if (subject_level == 0 && g->cfg_calc_custom_elo >= 800) {
         snprintf(cs->subject_label, sizeof(cs->subject_label), "Titan-C (~%d Elo)",
             g->cfg_calc_custom_elo);
     } else {
-        snprintf(cs->subject_label, sizeof(cs->subject_label), "Titan-C L%d %s", subject_level,
-            engine_get_preset(subject_level)->name);
+        snprintf(cs->subject_label, sizeof(cs->subject_label), "%s",
+            gauntlet_level_name(subject_level));
     }
     cs->target_ci = target_ci;
     cs->max_games = max_games;

@@ -50,7 +50,8 @@ static double wall_sec(void) {
 }
 
 static void write_datagen_status(const char *status_path, bool running, uint64_t existing,
-    uint64_t session_pos, uint64_t target_pos, uint64_t games, int threads, u64 nodes, double dt) {
+    uint64_t session_pos, uint64_t target_pos, uint64_t games, int threads, u64 nodes, double dt,
+    bool force_hist) {
     if (!status_path || status_path[0] == '\0') {
         return;
     }
@@ -76,6 +77,53 @@ static void write_datagen_status(const char *status_path, bool running, uint64_t
         (unsigned long long) games, pps, threads, (unsigned long long) nodes, pct, dt);
     fclose(sf);
     rename(tmp, status_path);
+
+    // Record live throughput telemetry into p3k_datagen_history.json every ~12s (plus final point)
+    typedef struct {
+        double elapsed_sec;
+        double pos_per_sec;
+        uint64_t file_positions;
+        uint64_t games;
+    } dg_pt;
+    static dg_pt hist[240];
+    static int hist_n = 0;
+    static double last_hist_dt = -99.0;
+    if (session_pos > 0 && (force_hist || (dt - last_hist_dt) >= 12.0)) {
+        last_hist_dt = dt;
+        if (hist_n >= 240) {
+            memmove(&hist[0], &hist[1], sizeof(dg_pt) * 239);
+            hist_n = 239;
+        }
+        hist[hist_n++] = (dg_pt) { dt, pps, file_pos, games };
+        char hpath[320];
+        const char *suf = strstr(status_path, "_status.json");
+        if (suf) {
+            size_t pref = (size_t) (suf - status_path);
+            if (pref + 16 < sizeof(hpath)) {
+                memcpy(hpath, status_path, pref);
+                snprintf(hpath + pref, sizeof(hpath) - pref, "_history.json");
+            } else {
+                snprintf(hpath, sizeof(hpath), "data/p3k_datagen_history.json");
+            }
+        } else {
+            snprintf(hpath, sizeof(hpath), "data/p3k_datagen_history.json");
+        }
+        char htmp[336];
+        snprintf(htmp, sizeof(htmp), "%s.tmp", hpath);
+        FILE *hf = fopen(htmp, "wb");
+        if (hf) {
+            fprintf(hf, "{\"points\":[");
+            for (int i = 0; i < hist_n; i++) {
+                fprintf(hf,
+                    "%s{\"elapsed_sec\":%.1f,\"pos_per_sec\":%.0f,\"file_positions\":%llu,\"games\":%llu}",
+                    i > 0 ? "," : "", hist[i].elapsed_sec, hist[i].pos_per_sec,
+                    (unsigned long long) hist[i].file_positions, (unsigned long long) hist[i].games);
+            }
+            fprintf(hf, "]}\n");
+            fclose(hf);
+            rename(htmp, hpath);
+        }
+    }
 }
 
 static inline uint64_t xorshift64(uint64_t *s) {
@@ -337,7 +385,8 @@ int main(int argc, char **argv) {
     uint64_t base_seed = ((uint64_t) time(NULL) << 20) ^ 0x9e3779b97f4a7c15ull;
 
     double t0 = wall_sec();
-    write_datagen_status(status_path, true, existing, 0, target_pos, 0, threads, nodes, 0.0);
+    write_datagen_status(
+        status_path, true, existing, 0, target_pos, 0, threads, nodes, 0.0, false);
     for (int t = 0; t < threads; t++) {
         cfgs[t].id = t;
         cfgs[t].nodes_per_move = nodes;
@@ -367,7 +416,8 @@ int main(int argc, char **argv) {
         pthread_mutex_lock(&io_mu);
         fflush(fp);
         pthread_mutex_unlock(&io_mu);
-        write_datagen_status(status_path, true, existing, p, target_pos, g, threads, nodes, dt);
+        write_datagen_status(
+            status_path, true, existing, p, target_pos, g, threads, nodes, dt, false);
         if (p >= target_pos) {
             break;
         }
@@ -383,8 +433,8 @@ int main(int argc, char **argv) {
 
     uint64_t final_p = atomic_load(&total_pos);
     uint64_t final_g = atomic_load(&total_games);
-    write_datagen_status(
-        status_path, false, existing, final_p, target_pos, final_g, threads, nodes, wall_sec() - t0);
+    write_datagen_status(status_path, false, existing, final_p, target_pos, final_g, threads,
+        nodes, wall_sec() - t0, true);
     printf("[datagen] Finished cleanly! Wrote +%llu positions (file total: %llu) in %.1fs.\n",
         (unsigned long long) final_p, (unsigned long long) (existing + final_p), wall_sec() - t0);
     return 0;

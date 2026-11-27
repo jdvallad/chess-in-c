@@ -624,6 +624,8 @@ def main():
     ap.add_argument("--max-gens", type=int, default=0, help="0 = continuous until stopped")
     ap.add_argument("--data-dir", default="data/az")
     ap.add_argument("--reset", action="store_true")
+    ap.add_argument("--init-only", action="store_true",
+                    help="Initialize untrained Gen-0 checkpoint if missing and exit without training (Skip Compute).")
     args = ap.parse_args()
     if args.full_throttle:
         args.games = max(args.games, 768)
@@ -646,7 +648,7 @@ def main():
         for fn in os.listdir(ckpt_dir):
             if fn.endswith(".pt"):
                 os.remove(os.path.join(ckpt_dir, fn))
-        for p in (latest_path, status_path, replay_path):
+        for p in (latest_path, status_path, replay_path, complete_flag_path):
             if os.path.exists(p):
                 os.remove(p)
 
@@ -708,6 +710,26 @@ def main():
                 "time": time.strftime("%H:%M:%S"),
             }
         )
+
+    if args.init_only:
+        payload = {
+            "ok": True,
+            "running": False,
+            "phase": "skipped_untrained" if gen == 0 else "paused",
+            "message": f"Gen {gen} initialized ({blocks}x{channels} SE-ResNet). Self-play skipped (not recommended — plays randomly!).",
+            "arch": f"{blocks}x{channels} SE-ResNet",
+            "params": count_parameters(model),
+            "gen": gen,
+            "total_games": total_games,
+            "total_positions": total_positions,
+            "replay_size": total_positions,
+            "history": history[-1500:],
+            "checkpoints": ckpt_meta[-200:],
+            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        atomic_write_json(status_path, payload)
+        print(f"[trainer] --init-only ready at {latest_path} (gen={gen})")
+        return 0
 
     if use_amp:
         model = model.to(memory_format=torch.channels_last)
@@ -1064,8 +1086,26 @@ def main():
                 replay.save(replay_path)
             except Exception:
                 pass
-        phase = "idle"
-        write_status(False, f"Paused cleanly at Gen {gen} ({total_games} games, {len(replay):,} replay pos saved).")
+        hit_target = args.max_gens > 0 and gen >= args.max_gens
+        if hit_target:
+            phase = "complete"
+            if os.path.basename(os.path.normpath(args.data_dir)) == "az_toy" and not os.path.exists(complete_flag_path):
+                atomic_write_json(
+                    complete_flag_path,
+                    {
+                        "completed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "gen": gen,
+                        "total_games": total_games,
+                        "reason": f"Toy Sprint reached target Gen {gen}!",
+                    },
+                )
+            write_status(
+                False,
+                f"Sprint Complete at Gen {gen} ({total_games} games, {len(replay):,} replay pos saved)!",
+            )
+        else:
+            phase = "idle"
+            write_status(False, f"Paused cleanly at Gen {gen} ({total_games} games, {len(replay):,} replay pos saved).")
         for ar in arenas:
             ar.close()
 

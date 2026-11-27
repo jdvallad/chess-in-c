@@ -155,9 +155,24 @@ def main():
     ap.add_argument("--pairs-per-iter", type=int, default=4, help="Opening pairs (2 games each) per SPSA step")
     ap.add_argument("--nodes", type=int, default=12000)
     ap.add_argument("--nnue", default="")
+    ap.add_argument("--resume", action="store_true", help="Resume from existing --out parameters instead of baseline")
     ap.add_argument("--out", default="data/spsa_best.json")
     ap.add_argument("--status", default="data/p3k_spsa_status.json")
     args = ap.parse_args()
+
+    if not args.nnue:
+        default_v4 = os.path.join(ROOT, "data", "titan_v6_1024.nnue")
+        if os.path.exists(default_v4):
+            args.nnue = default_v4
+
+    hist = []
+    if args.resume and os.path.exists(args.status):
+        try:
+            old_st = json.load(open(args.status))
+            if isinstance(old_st.get("history"), list):
+                hist = list(old_st["history"])
+        except Exception:
+            pass
 
     def write_status(running: bool, it: int, plus_sc: float = 0.0, n_g: int = 0, rounded: dict = None):
         if not args.status:
@@ -174,6 +189,7 @@ def main():
             "n_games": n_g,
             "progress_pct": round(100.0 * it / max(1, args.iters), 1),
             "params": rounded or {k: int(round(v)) for k, v in theta.items()},
+            "history": hist[-400:],
             "elapsed_sec": round(time.time() - t0, 1),
             "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
@@ -182,7 +198,7 @@ def main():
         os.replace(args.status + ".tmp", args.status)
 
     theta = {p[0]: p[1] for p in PARAMS}
-    if os.path.exists(args.out):
+    if args.resume and os.path.exists(args.out):
         try:
             saved = json.load(open(args.out))
             for k, v in saved.get("params", {}).items():
@@ -195,13 +211,18 @@ def main():
     rng = random.Random(42)
     t0 = time.time()
     write_status(True, 0)
-    print(f"[SPSA] Tuning {len(PARAMS)} params | threads={args.threads} | nodes={args.nodes} | pairs/iter={args.pairs_per_iter}")
+    print(
+        f"[SPSA] Tuning {len(PARAMS)} params | threads={args.threads} | nodes={args.nodes} | "
+        f"pairs/iter={args.pairs_per_iter} | nnue={args.nnue or 'default v3'}"
+    )
 
     last_it = 0
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.threads) as pool:
             for it in range(1, args.iters + 1):
-                a_k = 0.25 / ((it + 20.0) ** 0.602)
+                # Dimensionless step_scale (~0.18 -> ~0.06 over 200-300 iters) so parameters actually
+                # traverse their [min, max] trust region rather than stalling at +-1 integer!
+                step_scale = 0.18 / (((it / 35.0) + 1.0) ** 0.50)
                 c_scale = 1.0 / (it ** 0.101)
                 delta = {p[0]: rng.choice((-1.0, 1.0)) for p in PARAMS}
 
@@ -226,10 +247,23 @@ def main():
 
                 diff = (plus_score - (n_games - plus_score)) / float(n_games)  # in [-1, 1]
                 for name, _iv, lo, hi, c0 in PARAMS:
-                    theta[name] = max(lo, min(hi, theta[name] + a_k * c0 * diff * delta[name]))
+                    theta[name] = max(lo, min(hi, theta[name] + step_scale * c0 * diff * delta[name]))
 
                 rounded = {k: int(round(v)) for k, v in theta.items()}
                 last_it = it
+                hist.append({
+                    "iter": it,
+                    "plus_score": round(plus_score, 1),
+                    "n_games": n_games,
+                    "win_pct": round(100.0 * plus_score / max(1, n_games), 1),
+                    "elapsed": round(time.time() - t0, 1),
+                    "RFPBase": rounded.get("RFPBase", 90),
+                    "FutMult": rounded.get("FutMult", 85),
+                    "HistLMRDiv": rounded.get("HistLMRDiv", 4500),
+                    "CorrDiv": rounded.get("CorrDiv", 190),
+                    "SEDepth": rounded.get("SEDepth", 7),
+                    "NMPDiv": rounded.get("NMPDiv", 180),
+                })
                 print(
                     f"[SPSA] Iter {it:3d}/{args.iters} | +delta score={plus_score:.1f}/{n_games} | "
                     f"{time.time()-t0:.0f}s | RFP={rounded['RFPBase']} Fut={rounded['FutMult']} "
@@ -243,6 +277,12 @@ def main():
                 write_status(True, it, plus_score, n_games, rounded)
     finally:
         write_status(False, last_it)
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            import training_reports
+            training_reports.generate_all_reports()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
